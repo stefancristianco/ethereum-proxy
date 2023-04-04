@@ -43,13 +43,13 @@ class ExtensionBase(ABC):
         assert self.__initialized
         return await self._handle_request(request)
 
-    async def do_initialize(self) -> None:
+    async def do_initialize(self):
         assert not self.__initialized
         self.__initialized = True
 
         await self._initialize()
 
-    async def do_cancel(self) -> None:
+    async def do_cancel(self):
         assert self.__initialized
         self.__initialized = False
 
@@ -60,11 +60,11 @@ class ExtensionBase(ABC):
         pass
 
     @abstractmethod
-    async def _initialize(self) -> None:
+    async def _initialize(self):
         pass
 
     @abstractmethod
-    async def _cancel(self) -> None:
+    async def _cancel(self):
         pass
 
 
@@ -72,7 +72,7 @@ class Extension(ExtensionBase):
     def __init__(self, name: str):
         super().__init__(name)
 
-    def do_add_next_handler(self, next_handler: ExtensionBase) -> None:
+    def do_add_next_handler(self, next_handler: ExtensionBase):
         logger.info(f"Connecting {self} -> {next_handler}")
         self._add_next_handler(next_handler)
 
@@ -80,11 +80,11 @@ class Extension(ExtensionBase):
         return self._get_routes()
 
     @abstractmethod
-    def _add_next_handler(self, next_handler: ExtensionBase) -> None:
+    def _add_next_handler(self, next_handler: ExtensionBase):
         pass
 
     def _get_routes(self) -> List:
-        pass
+        return []
 
 
 def get_extension_by_name(ext_name: str) -> Extension:

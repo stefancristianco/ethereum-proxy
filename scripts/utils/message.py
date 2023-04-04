@@ -18,14 +18,14 @@ class Message:
         assert key not in RESTRICTED_KEYS
         return self.__attachments[key]
 
-    def attach(self, key: str, value: Any) -> None:
+    def attach(self, key: str, value: Any):
         assert key not in RESTRICTED_KEYS
         self.__attachments[key] = value
 
     def as_json(self) -> Any:
         if not "__json__" in self.__attachments:
             self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
-        return self.__attachments["__json__"]
+        return dict(self.__attachments["__json__"])
 
     def as_raw_data(self) -> Any:
         return self.__attachments["__data__"]

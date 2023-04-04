@@ -33,13 +33,13 @@ parser = argparse.ArgumentParser(
 )
 
 
-def add_multiarg_option(flag: str, required: bool, metavar: str, help: str) -> None:
+def add_multiarg_option(flag: str, required: bool, metavar: str, help: str):
     parser.add_argument(
         flag, required=required, metavar=metavar, type=str, nargs="+", help=help
     )
 
 
-def add_boolean_option(flag: str, help: str) -> None:
+def add_boolean_option(flag: str, help: str):
     parser.add_argument(flag, action="store_true", help=help)
 
 
@@ -65,10 +65,26 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 # Environment variables and global constants
 #
 
-async_tasks_count = int(os.environ.setdefault("PROXY_MAIN_ASYNC_TASKS_COUNT", "10"))
+async_tasks_count = int(os.environ.setdefault("PROXY_MAIN_ASYNC_TASKS_COUNT", str(10)))
+# max queue of request per pool url
+max_queue_size = int(os.environ.setdefault("PROXY_MAIN_MAX_QUEUE_SIZE", str(100)))
+# max size of a request (default: 10k)
+max_request_size = int(
+    os.environ.setdefault("PROXY_MAIN_MAX_REQUEST_SIZE", str(10 * 1024))
+)
+# max size of a response (default: 100mb)
+max_response_size = int(
+    os.environ.setdefault("PROXY_MAIN_MAX_RESPONSE_SIZE", str(100 * 1024 * 1024))
+)
+# response timeout (default: 10s)
+response_timeout = int(os.environ.setdefault("PROXY_MAIN_RESPONSE_TIMEOUT", str(10)))
 
 logger.info("========== Globals ===========")
-logger.info(f"PROXY_MAIN_ASYNC_TASKS_COUNT: {async_tasks_count}")
+logger.info(f"PROXY_MAIN_ASYNC_TASKS_COUNT: {async_tasks_count} tasks")
+logger.info(f"PROXY_MAIN_MAX_QUEUE_SIZE: {max_queue_size} entries/endpoint")
+logger.info(f"PROXY_MAIN_MAX_REQUEST_SIZE: {max_request_size} bytes")
+logger.info(f"PROXY_MAIN_MAX_RESPONSE_SIZE: {max_response_size} bytes")
+logger.info(f"PROXY_MAIN_RESPONSE_TIMEOUT: {response_timeout} seconds")
 
 #
 # Load extensions
@@ -90,7 +106,7 @@ for url in args.pool:
     logger.info(url)
 
 endpoint_queues = {
-    url: {"queue": asyncio.Queue(), "task_count": 0} for url in args.pool
+    url: {"queue": asyncio.Queue(max_queue_size), "task_count": 0} for url in args.pool
 }
 
 ws_uuid = 0
@@ -105,41 +121,38 @@ class WsClosedException(Exception):
     pass
 
 
+class WsNotOperational(Exception):
+    pass
+
+
 async def enter_pipeline(request: Message) -> Message:
     """Start request processing with first pipeline entry"""
     assert pipeline_head
     return await pipeline_head.do_handle_request(request)
 
 
-async def on_shutdown(app: web.Application) -> None:
+async def on_shutdown(app: web.Application):
     logger.info("Shutdown was called")
     ws_closers = [active_ws_connections[id].close() for id in active_ws_connections]
     await asyncio.gather(*ws_closers)
 
 
-async def ws_send_message(ws: web.WebSocketResponse, msg: Message) -> None:
+async def ws_send_message(ws: web.WebSocketResponse, msg: Message):
     data = msg.as_raw_data()
     if isinstance(data, bytes):
         return await ws.send_bytes(data)
     if isinstance(data, str):
         return await ws.send_str(data)
-    assert False
 
 
-async def ws_forward_request(request: web.Request) -> Any:
+async def ws_forward_request_loop(ws: web.WebSocketResponse):
     """Resolve a node request.
     The request is added to a queue and the call is suspended until
     the the request is resolved by a consumer tasks.
     """
-    ws = web.WebSocketResponse(max_msg_size=100 * 1024 * 1024)
-    await ws.prepare(request)
-
-    global ws_uuid
-    local_ws_uuid = ws_uuid
-    ws_uuid += 1
-    active_ws_connections[local_ws_uuid] = ws
-
     async for msg in ws:
+        if msg.type != aiohttp.WSMsgType.BINARY and msg.type != aiohttp.WSMsgType.TEXT:
+            continue
         try:
             msg_request: Message = Message(msg.data)
             msg_response: Message = await enter_pipeline(msg_request)
@@ -162,16 +175,27 @@ async def ws_forward_request(request: web.Request) -> Any:
                 )
             )
 
-    del active_ws_connections[local_ws_uuid]
+
+async def ws_forward_request(request: web.Request) -> Any:
+    """WS request handler"""
+    global ws_uuid
+    local_ws_uuid = ws_uuid
+    ws_uuid += 1
+
+    ws = web.WebSocketResponse(max_msg_size=max_request_size)
+    await ws.prepare(request)
+    try:
+        active_ws_connections[local_ws_uuid] = ws
+        with suppress(ConnectionError):
+            await ws_forward_request_loop(ws)
+    finally:
+        del active_ws_connections[local_ws_uuid]
 
     return ws
 
 
 async def forward_request(request: web.Request) -> Any:
-    """Resolve a node request.
-    The request is added to a queue and the call is suspended until
-    the the request is resolved by a consumer tasks.
-    """
+    """HTTP request handler"""
     try:
         msg_request: Message = Message(await request.read())
         msg_response: Message = await enter_pipeline(msg_request)
@@ -211,16 +235,20 @@ async def process_ws_request(
     request: Message, ws: aiohttp.ClientWebSocketResponse
 ) -> Message:
     await ws_send_message(ws, request)
-    msg = await ws.receive(timeout=10)
+    try:
+        msg = await ws.receive(timeout=response_timeout)
+    except asyncio.TimeoutError:
+        # Enhance error message
+        raise Exception("Timeout waiting for response")
+    else:
+        if msg.type == aiohttp.WSMsgType.CLOSED:
+            raise WsClosedException(f"Ws request status: {msg}")
+        if msg.type != aiohttp.WSMsgType.BINARY and msg.type != aiohttp.WSMsgType.TEXT:
+            raise Exception(f"Ws request status: {msg}")
+        return Message(msg.data)
 
-    if msg.type == aiohttp.WSMsgType.CLOSED:
-        raise WsClosedException(f"Ws request status: {msg}")
-    if msg.type != aiohttp.WSMsgType.BINARY and msg.type != aiohttp.WSMsgType.TEXT:
-        raise Exception(f"Ws request status: {msg}")
-    return Message(msg.data)
 
-
-async def request_resolver_loop_http(session: aiohttp.ClientSession, url: str) -> None:
+async def request_resolver_loop_http(session: aiohttp.ClientSession, url: str):
     """Endless request processing loop for http urls"""
     request_queue = endpoint_queues[url]["queue"]
     while True:
@@ -236,11 +264,11 @@ async def request_resolver_loop_http(session: aiohttp.ClientSession, url: str) -
             request_queue.task_done()
 
 
-async def request_resolver_loop_ws(session: aiohttp.ClientSession, url: str) -> None:
+async def request_resolver_loop_ws(session: aiohttp.ClientSession, url: str):
     """Endless request processing loop for ws urls"""
     request_queue = endpoint_queues[url]["queue"]
     async with session.ws_connect(
-        url, max_msg_size=100 * 1024 * 1024, verify_ssl=args.check_ssl
+        url, max_msg_size=max_response_size, verify_ssl=args.check_ssl
     ) as ws:
         while True:
             request: Message = await request_queue.get()
@@ -255,7 +283,7 @@ async def request_resolver_loop_ws(session: aiohttp.ClientSession, url: str) -> 
                 request_queue.task_done()
 
 
-async def request_resolver(session: aiohttp.ClientSession, url: str) -> None:
+async def request_resolver(session: aiohttp.ClientSession, url: str):
     """Delegate to the proper request resolver based on connection type"""
     request_resolver = request_resolver_loop_http
     if url.startswith("ws"):
@@ -278,7 +306,6 @@ async def run_request_resolvers(app):
     """
     tasks = []
     async with aiohttp.ClientSession() as session:
-        # Start 'PROXY_ASYNC_TASKS_COUNT' task for parallel requests
         for times in range(async_tasks_count):
             url = args.pool[times % len(args.pool)]
             endpoint_queues[url]["task_count"] += 1
@@ -298,11 +325,11 @@ class StartHandler(RoundRobinSelector):
     def __init__(self):
         super().__init__("start")
 
-    async def _initialize(self) -> None:
+    async def _initialize(self):
         logger.info("Initialization started...")
         await super()._initialize()
 
-    async def _cancel(self) -> None:
+    async def _cancel(self):
         logger.info("Cancel started...")
         await super()._cancel()
 
@@ -328,17 +355,17 @@ class FinalHandler(ExtensionBase):
                 logger.warning(str(ex))
         raise Exception("Max retries exceeded")
 
-    async def _initialize(self) -> None:
+    async def _initialize(self):
         logger.info("Initialization completed")
 
-    async def _cancel(self) -> None:
+    async def _cancel(self):
         logger.info("Cancel completed")
 
     def __repr__(self) -> str:
         return f"FinalHandler({self.get_name()})"
 
 
-def main() -> None:
+def main():
     app = web.Application()
 
     # Setup route handlers

@@ -111,17 +111,17 @@ class LoadBalancer(Extension):
         """Resolve '/lb/blacklist' request"""
         return web.json_response(self.__blacklist)
 
-    def _add_next_handler(self, next_handler: ExtensionBase) -> None:
+    def _add_next_handler(self, next_handler: ExtensionBase):
         self.__next_handlers.append(next_handler)
 
-    async def _initialize(self) -> None:
+    async def _initialize(self):
         self.__blacklist_task = asyncio.create_task(
             self.__manage_blacklisted_endpoints()
         )
         for handler in self.__next_handlers:
             await handler.do_initialize()
 
-    async def _cancel(self) -> None:
+    async def _cancel(self):
         self.__blacklist_task.cancel()
         with suppress(asyncio.CancelledError):
             await self.__blacklist_task
@@ -141,7 +141,7 @@ class LoadBalancer(Extension):
                 raise Exception(f"Api not supported, from {msg}")
         return msg
 
-    async def __manage_blacklisted_endpoints(self) -> None:
+    async def __manage_blacklisted_endpoints(self):
         while True:
             await asyncio.sleep(blacklist_duration)
 

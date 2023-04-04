@@ -17,13 +17,13 @@ class RoundRobinSelector(Extension):
             self.__rr_counter % len(self.__next_handlers)
         ].do_handle_request(request)
 
-    def _add_next_handler(self, next_handler: ExtensionBase) -> None:
+    def _add_next_handler(self, next_handler: ExtensionBase):
         self.__next_handlers.append(next_handler)
 
-    async def _initialize(self) -> None:
+    async def _initialize(self):
         for handler in self.__next_handlers:
             await handler.do_initialize()
 
-    async def _cancel(self) -> None:
+    async def _cancel(self):
         for handler in self.__next_handlers:
             await handler.do_cancel()
