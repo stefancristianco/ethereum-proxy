@@ -76,14 +76,14 @@ class Extension(ExtensionBase):
         logger.info(f"Connecting {self} -> {next_handler}")
         self._add_next_handler(next_handler)
 
-    def do_get_routes(self) -> List:
+    def do_get_routes(self) -> list:
         return self._get_routes()
 
     @abstractmethod
     def _add_next_handler(self, next_handler: ExtensionBase):
         pass
 
-    def _get_routes(self) -> List:
+    def _get_routes(self) -> list:
         return []
 
 
@@ -93,7 +93,7 @@ def get_extension_by_name(ext_name: str) -> Extension:
     :return: the extension instance if successful, throws exception otherwise.
     """
     importlib = __import__("importlib")
-    extensions = importlib.import_module(f"extensions.custom.{ext_name}")
+    extensions = importlib.import_module(f"extensions.{ext_name}")
     return getattr(
         extensions, "".join(part.capitalize() for part in ext_name.split("_"))
     )

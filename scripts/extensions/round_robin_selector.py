@@ -3,7 +3,7 @@ from utils.message import Message
 
 
 class RoundRobinSelector(Extension):
-    def __init__(self, name):
+    def __init__(self, name: str = "RoundRobinSelector"):
         super().__init__(name)
 
         self.__next_handlers = []

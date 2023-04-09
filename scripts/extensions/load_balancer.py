@@ -7,11 +7,12 @@ import logging
 import os
 
 from aiohttp import web
-from typing import List
 from contextlib import suppress
 
 from extensions.extension_base import Extension, ExtensionBase
 from utils.message import Message
+
+from utils.helpers import log_exception
 
 
 #
@@ -41,7 +42,8 @@ logger.info(f"PROXY_LB_BLACKLIST_DURATION: {blacklist_duration}")
 
 API_NOT_SUPPORTED_FILTERS = {
     # Blast
-    "not found",
+    "Method not found",
+    "Capacity exceeded",
     # Alchemy
     "is not available",
     # Others
@@ -79,9 +81,10 @@ class LoadBalancer(Extension):
                 continue
             try:
                 return self.__check_api_support(
-                    await next_handler.do_handle_request(request)
+                    request, await next_handler.do_handle_request(request)
                 )
             except Exception as ex:
+                log_exception(logger, ex)
                 # Blacklist endpoint on exception
                 self.__method_table[method]["endpoints"].discard(
                     next_handler.get_name()
@@ -91,7 +94,7 @@ class LoadBalancer(Extension):
                 self.__blacklist[method].append({str(next_handler): str(ex)})
         raise Exception(f"{method} not supported")
 
-    def _get_routes(self) -> List:
+    def _get_routes(self) -> list:
         return [
             ("/lb/statistics", self.__get_statistics),
             ("/lb/blacklist", self.__get_blacklist),
@@ -128,18 +131,19 @@ class LoadBalancer(Extension):
         for handler in self.__next_handlers:
             await handler.do_cancel()
 
-    def __check_api_support(self, msg: Message) -> Message:
-        if len(msg) > 512:
+    def __check_api_support(self, request: Message, response: Message) -> Message:
+        if len(response) > 512:
             # Optimization: error messages are small in size
-            return msg
-        msg_obj = msg.as_json()
-        if not "error" in msg_obj or not "message" in msg_obj["error"]:
-            return msg
-        error_message = msg_obj["error"]["message"]
-        for str in API_NOT_SUPPORTED_FILTERS:
-            if error_message.find(str) >= -1:
-                raise Exception(f"Api not supported, from {msg}")
-        return msg
+            return response
+        response_obj = response.as_json()
+        if not "error" in response_obj or not "message" in response_obj["error"]:
+            return response
+        error_message = response_obj["error"]["message"]
+        for msg in API_NOT_SUPPORTED_FILTERS:
+            if error_message.find(msg) > -1:
+                request_obj = request.as_json()
+                raise Exception(f"{request_obj['method']} not supported: {response}")
+        return response
 
     async def __manage_blacklisted_endpoints(self):
         while True:

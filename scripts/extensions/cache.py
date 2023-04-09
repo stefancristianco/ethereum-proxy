@@ -32,7 +32,7 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 # Duration to keep entries in cache (in seconds)
 cache_duration = int(os.environ.setdefault("PROXY_CACHE_DURATION", str(2)))
 medium_cache_duration = int(
-    os.environ.setdefault("PROXY_CACHE_MEDIUM_DURATION", str(30))
+    os.environ.setdefault("PROXY_CACHE_MEDIUM_DURATION", str(10))
 )
 long_cache_duration = int(
     os.environ.setdefault("PROXY_CACHE_LONG_DURATION", str(86400))
@@ -43,18 +43,41 @@ logger.info(f"PROXY_CACHE_DURATION: {cache_duration} seconds")
 logger.info(f"PROXY_CACHE_MEDIUM_DURATION: {medium_cache_duration} seconds")
 logger.info(f"PROXY_CACHE_LONG_DURATION: {long_cache_duration} seconds")
 
+
 MEDIUM_DURATION_FILTER = {
+    "eth_getBlockByHash",
     "eth_getBlockByNumber",
-    "eth_getLogs",
+    "eth_getBlockTransactionCountByHash",
+    "eth_getBlockTransactionCountByNumber",
     "eth_getCode",
-    "eth_getTransactionReceipt",
+    "eth_getLogs",
+    "eth_getTransactionByBlockHashAndIndex",
+    "eth_getTransactionByBlockNumberAndIndex",
+    "eth_getTransactionByHash",
     "eth_getTransactionCount",
+    "eth_getTransactionReceipt",
+    "eth_getUncleByBlockHashAndIndex",
+    "eth_getUncleByBlockNumberAndIndex",
+    "eth_getUncleCountByBlockHash",
+    "eth_getUncleCountByBlockNumber",
     "trace_block",
 }
 
-LONG_DURATION_FILTER = {"eth_chainId", "net_version", "web3_clientVersion"}
+LONG_DURATION_FILTER = {
+    "eth_chainId",
+    "net_listening",
+    "net_peerCount",
+    "net_version",
+    "web3_clientVersion",
+    "web3_sha3",
+}
 
-NO_CACHE_FILTER = {"eth_blockNumber"}
+NO_CACHE_FILTER = {
+    "eth_blockNumber",
+    "eth_sendRawTransaction",
+    "eth_subscribe",
+    "eth_unsubscribe",
+}
 
 
 class Cache(RoundRobinSelector):
@@ -106,8 +129,8 @@ class Cache(RoundRobinSelector):
         try:
             # Retrieve response online
             response = await super()._handle_request(request)
-            self.__add_response_to_cache(request, response)
             self.__hash_to_pending_response[hash(request)].set_result(response)
+            self.__add_response_to_cache(request, response)
         except Exception as ex:
             # Make sure to unblock all pending tasks
             self.__hash_to_pending_response[hash(request)].set_exception(ex)
@@ -118,7 +141,7 @@ class Cache(RoundRobinSelector):
         finally:
             del self.__hash_to_pending_response[hash(request)]
 
-    def _get_routes(self) -> List:
+    def _get_routes(self) -> list:
         return [("/cache/statistics", self.__get_statistics)]
 
     async def __get_statistics(self, request: web.Request) -> web.Response:

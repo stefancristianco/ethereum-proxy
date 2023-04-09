@@ -9,17 +9,18 @@ import logging
 import aiohttp
 import argparse
 import asyncio
-import json
 import os
 
 from aiohttp import web
 from contextlib import suppress
-from typing import Any
 
 from utils.message import Message
 from extensions.round_robin_selector import RoundRobinSelector
 from extensions.extension_base import ExtensionBase
+
 from extensions.extension_base import get_extension_by_name
+from utils.message import make_response_from_exception
+from utils.helpers import log_exception
 
 
 #
@@ -65,7 +66,8 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 # Environment variables and global constants
 #
 
-async_tasks_count = int(os.environ.setdefault("PROXY_MAIN_ASYNC_TASKS_COUNT", str(10)))
+# number of tasks per endpoint url
+async_tasks_count = int(os.environ.setdefault("PROXY_MAIN_ASYNC_TASKS_COUNT", str(2)))
 # max queue of request per pool url
 max_queue_size = int(os.environ.setdefault("PROXY_MAIN_MAX_QUEUE_SIZE", str(100)))
 # max size of a request (default: 10k)
@@ -80,7 +82,7 @@ max_response_size = int(
 response_timeout = int(os.environ.setdefault("PROXY_MAIN_RESPONSE_TIMEOUT", str(10)))
 
 logger.info("========== Globals ===========")
-logger.info(f"PROXY_MAIN_ASYNC_TASKS_COUNT: {async_tasks_count} tasks")
+logger.info(f"PROXY_MAIN_ASYNC_TASKS_COUNT: {async_tasks_count} tasks/endpoint")
 logger.info(f"PROXY_MAIN_MAX_QUEUE_SIZE: {max_queue_size} entries/endpoint")
 logger.info(f"PROXY_MAIN_MAX_REQUEST_SIZE: {max_request_size} bytes")
 logger.info(f"PROXY_MAIN_MAX_RESPONSE_SIZE: {max_response_size} bytes")
@@ -121,17 +123,13 @@ class WsClosedException(Exception):
     pass
 
 
-class WsNotOperational(Exception):
-    pass
-
-
 async def enter_pipeline(request: Message) -> Message:
     """Start request processing with first pipeline entry"""
     assert pipeline_head
     return await pipeline_head.do_handle_request(request)
 
 
-async def on_shutdown(app: web.Application):
+async def on_shutdown(_: web.Application):
     logger.info("Shutdown was called")
     ws_closers = [active_ws_connections[id].close() for id in active_ws_connections]
     await asyncio.gather(*ws_closers)
@@ -145,38 +143,30 @@ async def ws_send_message(ws: web.WebSocketResponse, msg: Message):
         return await ws.send_str(data)
 
 
+def http_send_message(msg: Message):
+    return web.json_response(body=msg.as_raw_data())
+
+
 async def ws_forward_request_loop(ws: web.WebSocketResponse):
     """Resolve a node request.
     The request is added to a queue and the call is suspended until
     the the request is resolved by a consumer tasks.
     """
-    async for msg in ws:
-        if msg.type != aiohttp.WSMsgType.BINARY and msg.type != aiohttp.WSMsgType.TEXT:
-            continue
-        try:
-            msg_request: Message = Message(msg.data)
-            msg_response: Message = await enter_pipeline(msg_request)
-            await ws_send_message(ws, msg_response)
-        except Exception as ex:
-            logger.error(str(ex))
-            if logger.level <= logging.DEBUG:
-                logger.exception("Caught exception")
-            await ws.send_json(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 0,
-                        "error": {
-                            "code": -1,
-                            "message": "Request failed",
-                            "data": str(ex),
-                        },
-                    }
-                )
-            )
+    with suppress(ConnectionError):
+        async for msg in ws:
+            if (
+                msg.type != aiohttp.WSMsgType.BINARY
+                and msg.type != aiohttp.WSMsgType.TEXT
+            ):
+                continue
+            try:
+                await ws_send_message(ws, await enter_pipeline(Message(msg.data)))
+            except Exception as ex:
+                log_exception(logger, ex)
+                await ws_send_message(ws, make_response_from_exception(ex))
 
 
-async def ws_forward_request(request: web.Request) -> Any:
+async def ws_forward_request(request: web.Request):
     """WS request handler"""
     global ws_uuid
     local_ws_uuid = ws_uuid
@@ -184,8 +174,9 @@ async def ws_forward_request(request: web.Request) -> Any:
 
     ws = web.WebSocketResponse(max_msg_size=max_request_size)
     await ws.prepare(request)
+
+    active_ws_connections[local_ws_uuid] = ws
     try:
-        active_ws_connections[local_ws_uuid] = ws
         with suppress(ConnectionError):
             await ws_forward_request_loop(ws)
     finally:
@@ -194,41 +185,30 @@ async def ws_forward_request(request: web.Request) -> Any:
     return ws
 
 
-async def forward_request(request: web.Request) -> Any:
+async def forward_request(request: web.Request):
     """HTTP request handler"""
     try:
-        msg_request: Message = Message(await request.read())
-        msg_response: Message = await enter_pipeline(msg_request)
-        return web.json_response(body=msg_response.as_raw_data())
+        return http_send_message(await enter_pipeline(Message(await request.read())))
     except Exception as ex:
-        logger.error(str(ex))
-        if logger.level <= logging.DEBUG:
-            logger.exception("Caught exception")
-        return web.json_response(
-            body=json.dumps(
-                {
-                    "jsonrpc": "2.0",
-                    "id": 0,
-                    "error": {
-                        "code": -1,
-                        "message": "Request failed",
-                        "data": str(ex),
-                    },
-                }
-            )
-        )
+        log_exception(logger, ex)
+        return http_send_message(make_response_from_exception(ex))
 
 
 async def process_http_request(
     request: Message, session: aiohttp.ClientSession, url: str
 ) -> Message:
-    async with session.post(
-        url,
-        data=request.as_raw_data(),
-        verify_ssl=args.check_ssl,
-        raise_for_status=True,
-    ) as response:
-        return Message(await response.read())
+    try:
+        async with session.post(
+            url,
+            data=request.as_raw_data(),
+            verify_ssl=args.check_ssl,
+            raise_for_status=True,
+            timeout=response_timeout,
+        ) as response:
+            return Message(await response.read())
+    except asyncio.TimeoutError:
+        # Enhance error message
+        raise Exception("Timeout waiting for response")
 
 
 async def process_ws_request(
@@ -306,10 +286,10 @@ async def run_request_resolvers(app):
     """
     tasks = []
     async with aiohttp.ClientSession() as session:
-        for times in range(async_tasks_count):
-            url = args.pool[times % len(args.pool)]
-            endpoint_queues[url]["task_count"] += 1
-            tasks.append(asyncio.create_task(request_resolver(session, url)))
+        for url in args.pool:
+            for _ in range(async_tasks_count):
+                endpoint_queues[url]["task_count"] += 1
+                tasks.append(asyncio.create_task(request_resolver(session, url)))
         await pipeline_head.do_initialize()
 
         yield
@@ -321,9 +301,9 @@ async def run_request_resolvers(app):
             await asyncio.gather(*tasks)
 
 
-class StartHandler(RoundRobinSelector):
+class Receiver(RoundRobinSelector):
     def __init__(self):
-        super().__init__("start")
+        super().__init__("receiver")
 
     async def _initialize(self):
         logger.info("Initialization started...")
@@ -334,10 +314,10 @@ class StartHandler(RoundRobinSelector):
         await super()._cancel()
 
     def __repr__(self) -> str:
-        return "StartHandler()"
+        return "Receiver()"
 
 
-class FinalHandler(ExtensionBase):
+class Endpoint(ExtensionBase):
     def __init__(self, url: str):
         super().__init__(url)
 
@@ -362,7 +342,7 @@ class FinalHandler(ExtensionBase):
         logger.info("Cancel completed")
 
     def __repr__(self) -> str:
-        return f"FinalHandler({self.get_name()})"
+        return f"Endpoint({self.get_name()})"
 
 
 def main():
@@ -383,14 +363,14 @@ def main():
 
     # Build pipeline
     global pipeline_head
-    pipeline_head = StartHandler()
+    pipeline_head = Receiver()
 
     prev_handler = pipeline_head
     for ext in extensions:
         prev_handler.do_add_next_handler(ext)
         prev_handler = ext
     for url in args.pool:
-        final_handler = FinalHandler(url)
+        final_handler = Endpoint(url)
         prev_handler.do_add_next_handler(final_handler)
 
     app.cleanup_ctx.append(run_request_resolvers)
