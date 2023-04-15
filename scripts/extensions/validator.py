@@ -100,15 +100,15 @@ class Validator(RoundRobinSelector):
         return await super()._handle_request(request)
 
     async def __handle_eth_accounts(self, request: Message) -> Message:
-        self.__ensure_empty_array_params(self, request)
+        self.__ensure_empty_array_params(request)
         return await super()._handle_request(request)
 
     async def __handle_eth_chain_id(self, request: Message) -> Message:
-        self.__ensure_empty_array_params(self, request)
+        self.__ensure_empty_array_params(request)
         return await super()._handle_request(request)
 
     async def __handle_eth_block_number(self, request: Message) -> Message:
-        self.__ensure_empty_array_params(self, request)
+        self.__ensure_empty_array_params(request)
         return await super()._handle_request(request)
 
     async def __handle_eth_get_block_by_number(self, request: Message) -> Message:
