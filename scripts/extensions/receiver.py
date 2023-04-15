@@ -14,7 +14,7 @@ from utils.message import Message
 from extensions.abstract.round_robin_selector import RoundRobinSelector
 
 from utils.message import make_response_from_exception
-from utils.helpers import log_exception
+from utils.helpers import log_exception, get_or_default, unreachable_code
 
 #
 # Setup logger
@@ -27,28 +27,21 @@ logger = logging.getLogger(__name__)
 
 logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
-#
-# Environment variables and global constants
-#
-
-# max size of a request (default: 10k)
-max_request_size = int(
-    os.environ.setdefault("PROXY_MAIN_MAX_REQUEST_SIZE", str(10 * 1024))
-)
-
-logger.info("========== Globals ===========")
-logger.info(f"PROXY_MAIN_MAX_REQUEST_SIZE: {max_request_size} bytes")
-
 
 class Receiver(RoundRobinSelector):
-    def __init__(self):
-        super().__init__("receiver")
+    def __init__(self, alias: str, config: dict):
+        super().__init__(alias, config)
+
+        self.__max_request_size = get_or_default(config, "max_request_size", 10 * 1024)
 
         self.__ws_uuid = 0
         self.__active_ws_connections = {}
 
     def __repr__(self) -> str:
-        return "Receiver()"
+        return f"Receiver({self.get_alias()}, {self.get_config()})"
+
+    def __str__(self) -> str:
+        return f"Receiver({self.get_alias()})"
 
     async def on_shutdown(self, _):
         await asyncio.gather(
@@ -58,10 +51,11 @@ class Receiver(RoundRobinSelector):
             ]
         )
 
-    def _get_routes(self) -> list:
+    def _get_routes(self, prefix: str) -> list:
+        logger.debug(f"{self}: {prefix}/")
         return [
-            web.post("/", self.__forward_request),
-            web.get("/ws", self.__ws_forward_request),
+            web.post(f"{prefix}/", self.__forward_request),
+            web.get(f"{prefix}/ws", self.__ws_forward_request),
         ]
 
     async def __ws_forward_request(self, request: web.Request):
@@ -69,7 +63,7 @@ class Receiver(RoundRobinSelector):
         local_ws_uuid = self.__ws_uuid
         self.__ws_uuid += 1
 
-        ws = web.WebSocketResponse(max_msg_size=max_request_size)
+        ws = web.WebSocketResponse(max_msg_size=self.__max_request_size)
         await ws.prepare(request)
 
         self.__active_ws_connections[local_ws_uuid] = ws
@@ -97,6 +91,7 @@ class Receiver(RoundRobinSelector):
             return await ws.send_bytes(data)
         if isinstance(data, str):
             return await ws.send_str(data)
+        unreachable_code()
 
     def __http_send_message(self, msg: Message):
         return web.json_response(body=msg.as_raw_data())

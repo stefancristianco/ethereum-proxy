@@ -12,6 +12,8 @@ from contextlib import suppress
 from utils.message import Message
 from extensions.abstract.extension_base import Extension
 
+from utils.helpers import get_or_default, unreachable_code
+
 #
 # Setup logger
 #
@@ -23,46 +25,32 @@ logger = logging.getLogger(__name__)
 
 logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
-#
-# Environment variables and global constants
-#
-
-# number of tasks per endpoint url
-async_tasks_count = int(os.environ.setdefault("PROXY_MAIN_ASYNC_TASKS_COUNT", str(2)))
-# max queue of request per pool url
-max_queue_size = int(os.environ.setdefault("PROXY_MAIN_MAX_QUEUE_SIZE", str(100)))
-# max size of a response (default: 100mb)
-max_response_size = int(
-    os.environ.setdefault("PROXY_MAIN_MAX_RESPONSE_SIZE", str(100 * 1024 * 1024))
-)
-# response timeout (default: 10s)
-response_timeout = int(os.environ.setdefault("PROXY_MAIN_RESPONSE_TIMEOUT", str(10)))
-# check ssl certificate
-check_ssl = bool(int(os.environ.setdefault("PROXY_MAIN_RESPONSE_TIMEOUT", str(1))))
-
-logger.info("========== Globals ===========")
-logger.info(f"PROXY_MAIN_ASYNC_TASKS_COUNT: {async_tasks_count} tasks/endpoint")
-logger.info(f"PROXY_MAIN_MAX_QUEUE_SIZE: {max_queue_size} entries/endpoint")
-logger.info(f"PROXY_MAIN_MAX_RESPONSE_SIZE: {max_response_size} bytes")
-logger.info(f"PROXY_MAIN_RESPONSE_TIMEOUT: {response_timeout} seconds")
-
 
 class Endpoint(Extension):
     class WsClosedException(Exception):
         pass
 
-    def __init__(self, url: str):
-        super().__init__(url)
+    def __init__(self, alias: str, config: dict):
+        super().__init__(alias, config)
 
-        self.__queue = asyncio.Queue(max_queue_size)
+        self.__tasks_count = get_or_default(config, "tasks_count", 2)
+        self.__max_queue_size = get_or_default(config, "max_queue_size", 100)
+        self.__max_response_size = get_or_default(
+            config, "max_response_size", 100 * 2**20  # 100MB
+        )
+        self.__response_timeout = get_or_default(config, "max_queue_size", 100)
+        # check ssl certificate
+        self.__check_ssl = get_or_default(config, "check_ssl", False)
+        self.__queue = asyncio.Queue(self.__max_queue_size)
 
     def __repr__(self) -> str:
-        return f"Endpoint({self.get_name()})"
+        return f"Endpoint({self.get_alias()}, {self.get_config()})"
+
+    def __str__(self) -> str:
+        return f"Endpoint({self.get_alias()})"
 
     async def _handle_request(self, request: Message) -> Message:
-        retries_left = async_tasks_count + 1
-        while retries_left > 0:
-            retries_left -= 1
+        for _ in range(self.__tasks_count + 1):
             # Enhance the request with a Future to block on until a response is available
             request.attach("response_future", asyncio.Future())
             try:
@@ -73,20 +61,17 @@ class Endpoint(Extension):
                 logger.warning(str(ex))
         raise Exception("Max retries exceeded")
 
-    def _add_next_handler(self, _):
-        # This step is final
-        assert False
-
     async def ctx_cleanup(self, _):
         tasks = []
         async with aiohttp.ClientSession() as session:
-            for _ in range(async_tasks_count):
+            config = self.get_config()
+            for _ in range(self.__tasks_count):
                 tasks.append(
-                    asyncio.create_task(
-                        self.__request_resolver(session, self.get_name())
-                    )
+                    asyncio.create_task(self.__request_resolver(session, config["url"]))
                 )
+
             yield
+
             for task in tasks:
                 task.cancel()
             with suppress(asyncio.CancelledError):
@@ -112,7 +97,7 @@ class Endpoint(Extension):
     ):
         """Endless request processing loop for http urls"""
         while True:
-            request = await self.__queue.get()
+            request: Message = await self.__queue.get()
             try:
                 request.retrieve("response_future").set_result(
                     await self.__process_http_request(request, session, url)
@@ -128,7 +113,7 @@ class Endpoint(Extension):
     ):
         """Endless request processing loop for ws urls"""
         async with session.ws_connect(
-            url, max_msg_size=max_response_size, verify_ssl=check_ssl
+            url, max_msg_size=self.__max_response_size, verify_ssl=self.__check_ssl
         ) as ws:
             while True:
                 request: Message = await self.__queue.get()
@@ -151,9 +136,9 @@ class Endpoint(Extension):
                 url,
                 headers=headers,
                 data=request.as_raw_data(),
-                verify_ssl=check_ssl,
+                verify_ssl=self.__check_ssl,
+                timeout=self.__response_timeout,
                 raise_for_status=True,
-                timeout=response_timeout,
             ) as response:
                 return Message(await response.read())
         except asyncio.TimeoutError:
@@ -165,7 +150,7 @@ class Endpoint(Extension):
     ) -> Message:
         await self.__ws_send_message(ws, request)
         try:
-            msg = await ws.receive(timeout=response_timeout)
+            msg = await ws.receive(timeout=self.__response_timeout)
         except asyncio.TimeoutError:
             # Enhance error message
             raise Exception("Timeout waiting for response")
@@ -187,3 +172,4 @@ class Endpoint(Extension):
             return await ws.send_bytes(data)
         if isinstance(data, str):
             return await ws.send_str(data)
+        unreachable_code()

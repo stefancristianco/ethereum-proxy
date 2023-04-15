@@ -12,6 +12,7 @@ from utils.message import (
     EthJsonVersion,
     EthMethodNotFound,
     EthInvalidParams,
+    EthNotSupported,
 )
 
 
@@ -28,8 +29,8 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 
 class Validator(RoundRobinSelector):
-    def __init__(self):
-        super().__init__("Validator")
+    def __init__(self, alias: str, config: dict):
+        super().__init__(alias, config)
 
         self.__validator_table = {
             # Ethereum API
@@ -40,7 +41,7 @@ class Validator(RoundRobinSelector):
             "eth_estimateGas": self.__handle_allow_call,
             "eth_feeHistory": self.__handle_allow_call,
             "eth_gasPrice": self.__handle_allow_call,
-            "eth_getBalance": self.__handle_allow_call,
+            "eth_getBalance": self.__handle_eth_get_balance,
             "eth_getBlockByHash": self.__handle_allow_call,
             "eth_getBlockByNumber": self.__handle_eth_get_block_by_number,
             "eth_getBlockTransactionCountByHash": self.__handle_allow_call,
@@ -53,7 +54,7 @@ class Validator(RoundRobinSelector):
             "eth_getTransactionByBlockNumberAndIndex": self.__handle_eth_get_transaction_by_block_number_and_index,
             "eth_getTransactionByHash": self.__handle_allow_call,
             "eth_getTransactionCount": self.__handle_eth_get_transaction_count,
-            "eth_getTransactionReceipt": self.__handle_allow_call,
+            "eth_getTransactionReceipt": self.__handle_eth_get_transaction_receipt,
             "eth_getUncleByBlockHashAndIndex": self.__handle_allow_call,
             "eth_getUncleByBlockNumberAndIndex": self.__handle_eth_get_uncle_by_block_number_and_index,
             "eth_getUncleCountByBlockHash": self.__handle_allow_call,
@@ -77,10 +78,15 @@ class Validator(RoundRobinSelector):
         }
 
     def __repr__(self) -> str:
-        return "Validator()"
+        return f"Validator({self.get_alias()}, {self.get_config()})"
+
+    def __str__(self) -> str:
+        return f"Validator({self.get_alias()})"
 
     async def _handle_request(self, request: Message) -> Message:
         request_obj = request.as_json()
+        if isinstance(request_obj, list):
+            raise EthNotSupported("Batch requests not allowed")
         for key in ["jsonrpc", "id", "method"]:
             if not key in request_obj:
                 raise EthInvalidRequest(f"Missing '{key}' entry")
@@ -118,6 +124,16 @@ class Validator(RoundRobinSelector):
     async def __handle_eth_get_logs(self, request: Message) -> Message:
         self.__ensure_array_params_with_size(request, 1)
         self.__ensure_array_params_with_types(request, [dict])
+        return await self.__handle_allow_call(request)
+
+    async def __handle_eth_get_transaction_receipt(self, request: Message) -> Message:
+        self.__ensure_array_params_with_size(request, 1)
+        self.__ensure_array_params_with_types(request, [str])
+        return await self.__handle_allow_call(request)
+
+    async def __handle_eth_get_balance(self, request: Message) -> Message:
+        self.__ensure_array_params_with_size(request, 2)
+        self.__ensure_array_params_with_types(request, [str, str])
         return await self.__handle_allow_call(request)
 
     async def __handle_eth_get_storage_at(self, request: Message) -> Message:
@@ -194,7 +210,7 @@ class Validator(RoundRobinSelector):
     def __ensure_array_params_with_size(self, request: Message, size: int):
         request_obj = request.as_json()
         if not "params" in request_obj:
-            raise EthInvalidParams(f"{request_obj['method']}: missing 'params'")
+            raise EthInvalidParams(f"{request_obj['method']}: missing params")
         if not isinstance(request_obj["params"], list):
             raise EthInvalidParams(f"{request_obj['method']}: wrong params type")
         if len(request_obj["params"]) < size:
@@ -205,7 +221,9 @@ class Validator(RoundRobinSelector):
     def __ensure_array_params_with_types(self, request: Message, types: list):
         request_obj = request.as_json()
         params = request_obj["params"]
+
         assert len(params) >= len(types)
+
         for index in range(len(types)):
             if not isinstance(params[index], types[index]):
                 raise EthInvalidParams(

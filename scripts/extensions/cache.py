@@ -12,6 +12,8 @@ from contextlib import suppress
 from extensions.abstract.round_robin_selector import RoundRobinSelector
 from utils.message import Message
 
+from utils.helpers import get_or_default
+
 
 #
 # Setup logger
@@ -24,41 +26,15 @@ logger = logging.getLogger(__name__)
 
 logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
-#
-# Environment variables and global constants
-#
-
-# Duration to keep entries in cache (in seconds)
-cache_duration = int(os.environ.setdefault("PROXY_CACHE_DURATION", str(2)))
-medium_cache_duration = int(
-    os.environ.setdefault("PROXY_CACHE_MEDIUM_DURATION", str(10))
-)
-long_cache_duration = int(
-    os.environ.setdefault("PROXY_CACHE_LONG_DURATION", str(86400))
-)
-
-logger.info("======== Cache Globals =======")
-logger.info(f"PROXY_CACHE_DURATION: {cache_duration} seconds")
-logger.info(f"PROXY_CACHE_MEDIUM_DURATION: {medium_cache_duration} seconds")
-logger.info(f"PROXY_CACHE_LONG_DURATION: {long_cache_duration} seconds")
-
 
 MEDIUM_DURATION_FILTER = {
+    # Ethereum API
     "eth_getBlockByHash",
     "eth_getBlockByNumber",
     "eth_getBlockTransactionCountByHash",
     "eth_getBlockTransactionCountByNumber",
-    "eth_getCode",
     "eth_getLogs",
-    "eth_getTransactionByBlockHashAndIndex",
-    "eth_getTransactionByBlockNumberAndIndex",
-    "eth_getTransactionByHash",
-    "eth_getTransactionCount",
-    "eth_getTransactionReceipt",
-    "eth_getUncleByBlockHashAndIndex",
-    "eth_getUncleByBlockNumberAndIndex",
-    "eth_getUncleCountByBlockHash",
-    "eth_getUncleCountByBlockNumber",
+    # Trace API
     "trace_block",
 }
 
@@ -80,8 +56,16 @@ NO_CACHE_FILTER = {
 
 
 class Cache(RoundRobinSelector):
-    def __init__(self):
-        super().__init__("Cache")
+    def __init__(self, alias: str, config: dict):
+        super().__init__(alias, config)
+
+        self.__cache_duration = get_or_default(config, "cache_duration", 2)
+        self.__medium_cache_duration = get_or_default(
+            config, "medium_cache_duration", 30
+        )
+        self.__long_cache_duration = get_or_default(
+            config, "long_cache_duration", 86400
+        )
 
         self.__statistics_dict = {}
         self.__hash_to_pending_response = {}
@@ -96,7 +80,10 @@ class Cache(RoundRobinSelector):
         self.__long_duration_cache = {}
 
     def __repr__(self) -> str:
-        return "Cache()"
+        return f"Cache({self.get_alias()}, {self.get_config()})"
+
+    def __str__(self) -> str:
+        return f"Cache({self.get_alias()})"
 
     async def _handle_request(self, request: Message) -> Message:
         """Resolve the given request either from cache or online"""
@@ -128,8 +115,8 @@ class Cache(RoundRobinSelector):
         try:
             # Retrieve response online
             response = await super()._handle_request(request)
-            self.__hash_to_pending_response[hash(request)].set_result(response)
             self.__add_response_to_cache(request, response)
+            self.__hash_to_pending_response[hash(request)].set_result(response)
         except Exception as ex:
             # Make sure to unblock all pending tasks
             self.__hash_to_pending_response[hash(request)].set_exception(ex)
@@ -140,28 +127,34 @@ class Cache(RoundRobinSelector):
         finally:
             del self.__hash_to_pending_response[hash(request)]
 
-    def _get_routes(self) -> list:
-        return [web.post("/cache/statistics", self.__get_statistics)]
+    def _get_routes(self, prefix: str) -> list:
+        return [web.post(f"{prefix}/statistics", self.__get_statistics)]
 
-    async def __get_statistics(self, request: web.Request) -> web.Response:
+    async def __get_statistics(self, _: web.Request) -> web.Response:
         """Resolve '/cache/statistics' request"""
         return web.json_response(self.__statistics_dict)
 
     async def ctx_cleanup(self, _):
         tasks = [
             asyncio.create_task(
-                self.__cache_cleaner(self.__general_purpose_cache, cache_duration)
-            ),
-            asyncio.create_task(
                 self.__cache_cleaner(
-                    self.__medium_duration_cache, medium_cache_duration
+                    self.__general_purpose_cache, self.__cache_duration
                 )
             ),
             asyncio.create_task(
-                self.__cache_cleaner(self.__long_duration_cache, long_cache_duration)
+                self.__cache_cleaner(
+                    self.__medium_duration_cache, self.__medium_cache_duration
+                )
+            ),
+            asyncio.create_task(
+                self.__cache_cleaner(
+                    self.__long_duration_cache, self.__long_cache_duration
+                )
             ),
         ]
+
         yield
+
         for task in tasks:
             task.cancel()
         with suppress(asyncio.CancelledError):
@@ -182,9 +175,7 @@ class Cache(RoundRobinSelector):
             # Optimization: error messages are small in size
             return True
         msg_obj = msg.as_json()
-        if not "result" in msg_obj or not msg_obj["result"]:
-            return False
-        return True
+        return "result" in msg_obj and msg_obj["result"]
 
     def __add_response_to_cache(self, request: Message, response: Message):
         if self.__is_message_valid(response):

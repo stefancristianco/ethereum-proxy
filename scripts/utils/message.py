@@ -1,4 +1,5 @@
 import json
+import copy
 
 MESSAGE_HEADER = {"jsonrpc": "2.0", "id": 0}
 RESTRICTED_KEYS = {"__data__", "__json__", "__hash__"}
@@ -38,7 +39,12 @@ class Message:
     def as_json(self):
         if not "__json__" in self.__attachments:
             self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
-        return dict(self.__attachments["__json__"])
+        return self.__attachments["__json__"]
+
+    def as_json_copy(self):
+        if not "__json__" in self.__attachments:
+            self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
+        return copy.deepcopy(self.__attachments["__json__"])
 
     def as_raw_data(self):
         return self.__attachments["__data__"]
@@ -160,3 +166,7 @@ def make_response_from_exception(ex: Exception) -> Message:
             }
         )
     )
+
+
+def make_message_copy(msg: Message) -> Message:
+    return Message(msg.as_raw_data())

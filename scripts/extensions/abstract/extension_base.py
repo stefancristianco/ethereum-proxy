@@ -9,6 +9,7 @@ from abc import ABC
 from abc import abstractmethod
 
 from utils.message import Message
+from utils.helpers import unreachable_code
 
 #
 # Setup logger
@@ -30,11 +31,15 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 class ExtensionBase(ABC):
     """Extension base required functionality"""
 
-    def __init__(self, name: str):
-        self.__name = name
+    def __init__(self, alias: str, config: dict):
+        self.__alias = alias
+        self.__config = config
 
-    def get_name(self) -> str:
-        return self.__name
+    def get_alias(self) -> str:
+        return self.__alias
+
+    def get_config(self):
+        return self.__config
 
     async def do_handle_request(self, request: Message) -> Message:
         return await self._handle_request(request)
@@ -51,21 +56,20 @@ class ExtensionBase(ABC):
 
 
 class Extension(ExtensionBase):
-    def __init__(self, name: str):
-        super().__init__(name)
+    def __init__(self, alias: str, config: dict):
+        super().__init__(alias, config)
 
     def do_add_next_handler(self, next_handler: ExtensionBase):
         logger.debug(f"Connecting {self} -> {next_handler}")
         self._add_next_handler(next_handler)
 
-    def do_get_routes(self) -> list:
-        return self._get_routes()
+    def do_get_routes(self, prefix: str) -> list:
+        return self._get_routes(prefix)
 
-    @abstractmethod
-    def _add_next_handler(self, next_handler: ExtensionBase):
-        pass
+    def _add_next_handler(self, _: ExtensionBase):
+        unreachable_code()
 
-    def _get_routes(self) -> list:
+    def _get_routes(self, _: str) -> list:
         return []
 
 
