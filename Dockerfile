@@ -19,7 +19,7 @@ RUN npm install -g wscat
 RUN useradd -G sudo -U -m -s /bin/bash admin \
     && echo "admin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-WORKDIR /home/admin/request-proxy
+COPY --chown=admin:admin scripts /home/admin/scripts
 
 USER admin
 
@@ -29,4 +29,4 @@ RUN pip install aiohttp \
     && pip install black \
     && pip install argparse
 
-ENTRYPOINT ["python"]
+ENTRYPOINT ["python", "/home/admin/scripts/main.py"]
