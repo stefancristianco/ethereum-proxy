@@ -1,7 +1,5 @@
 import json
 
-from typing import Any
-
 MESSAGE_HEADER = {"jsonrpc": "2.0", "id": 0}
 RESTRICTED_KEYS = {"__data__", "__json__", "__hash__"}
 ETH_ERROR_CODES = {
@@ -22,7 +20,7 @@ ETH_ERROR_CODES = {
 
 
 class Message:
-    def __init__(self, data: Any):
+    def __init__(self, data):
         assert isinstance(data, str) or isinstance(data, bytes)
         self.__attachments = {"__data__": data}
 
@@ -33,7 +31,7 @@ class Message:
         assert key not in RESTRICTED_KEYS
         return self.__attachments[key]
 
-    def attach(self, key: str, value: Any):
+    def attach(self, key: str, value):
         assert key not in RESTRICTED_KEYS
         self.__attachments[key] = value
 
@@ -151,7 +149,7 @@ def make_request_message(method: str, params: list = []) -> Message:
 
 def make_response_from_exception(ex: Exception) -> Message:
     if issubclass(type(ex), ValueError):
-        ex = EthParseError(str(ex))
+        ex = EthInvalidParams(str(ex))
     elif not issubclass(type(ex), EthException):
         ex = EthInternalError(str(ex))
     return Message(

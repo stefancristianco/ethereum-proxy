@@ -5,7 +5,7 @@ Dump request/response
 import logging
 import os
 
-from extensions.round_robin_selector import RoundRobinSelector
+from extensions.abstract.round_robin_selector import RoundRobinSelector
 from utils.message import Message
 
 

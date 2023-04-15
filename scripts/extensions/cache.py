@@ -7,10 +7,9 @@ import logging
 import os
 
 from aiohttp import web
-from typing import List, Any
 from contextlib import suppress
 
-from extensions.round_robin_selector import RoundRobinSelector
+from extensions.abstract.round_robin_selector import RoundRobinSelector
 from utils.message import Message
 
 
@@ -142,14 +141,14 @@ class Cache(RoundRobinSelector):
             del self.__hash_to_pending_response[hash(request)]
 
     def _get_routes(self) -> list:
-        return [("/cache/statistics", self.__get_statistics)]
+        return [web.post("/cache/statistics", self.__get_statistics)]
 
     async def __get_statistics(self, request: web.Request) -> web.Response:
         """Resolve '/cache/statistics' request"""
         return web.json_response(self.__statistics_dict)
 
-    async def _initialize(self):
-        self.__cache_cleaner_task = [
+    async def ctx_cleanup(self, _):
+        tasks = [
             asyncio.create_task(
                 self.__cache_cleaner(self.__general_purpose_cache, cache_duration)
             ),
@@ -162,16 +161,13 @@ class Cache(RoundRobinSelector):
                 self.__cache_cleaner(self.__long_duration_cache, long_cache_duration)
             ),
         ]
-        await super()._initialize()
-
-    async def _cancel(self):
-        for task in self.__cache_cleaner_task:
+        yield
+        for task in tasks:
             task.cancel()
         with suppress(asyncio.CancelledError):
-            await asyncio.gather(*self.__cache_cleaner_task)
-        await super()._cancel()
+            await asyncio.gather(*tasks)
 
-    async def __cache_cleaner(self, cache: Any, duration: int):
+    async def __cache_cleaner(self, cache, duration: int):
         """Task in charge with removing old entries from the cache"""
         cache_snapshot = {}
         while True:

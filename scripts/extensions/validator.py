@@ -5,7 +5,7 @@ Validate requests.
 import logging
 import os
 
-from extensions.round_robin_selector import RoundRobinSelector
+from extensions.abstract.round_robin_selector import RoundRobinSelector
 from utils.message import (
     Message,
     EthInvalidRequest,
@@ -33,20 +33,21 @@ class Validator(RoundRobinSelector):
 
         self.__validator_table = {
             # Ethereum API
-            "eth_blockNumber": self.__handle_allow_call,
+            "eth_accounts": self.__handle_eth_accounts,
+            "eth_blockNumber": self.__handle_eth_block_number,
             "eth_call": self.__handle_allow_call,
-            "eth_chainId": self.__handle_allow_call,
+            "eth_chainId": self.__handle_eth_chain_id,
             "eth_estimateGas": self.__handle_allow_call,
             "eth_feeHistory": self.__handle_allow_call,
             "eth_gasPrice": self.__handle_allow_call,
-            "eth_getBalance": self.__handle_eth_get_balance,
+            "eth_getBalance": self.__handle_allow_call,
             "eth_getBlockByHash": self.__handle_allow_call,
             "eth_getBlockByNumber": self.__handle_eth_get_block_by_number,
             "eth_getBlockTransactionCountByHash": self.__handle_allow_call,
-            "eth_getBlockTransactionCountByNumber": self.__handle_eth_get_block_transaction_count_by_number,
+            "eth_getBlockTransactionCountByNumber": self.__handle_allow_call,
             "eth_getCode": self.__handle_eth_get_code,
             "eth_getLogs": self.__handle_eth_get_logs,
-            "eth_getProof": self.__handle_eth_get_proof,
+            "eth_getProof": self.__handle_allow_call,
             "eth_getStorageAt": self.__handle_eth_get_storage_at,
             "eth_getTransactionByBlockHashAndIndex": self.__handle_allow_call,
             "eth_getTransactionByBlockNumberAndIndex": self.__handle_eth_get_transaction_by_block_number_and_index,
@@ -82,7 +83,7 @@ class Validator(RoundRobinSelector):
         request_obj = request.as_json()
         for key in ["jsonrpc", "id", "method"]:
             if not key in request_obj:
-                raise EthInvalidRequest("Missing '{key}' entry")
+                raise EthInvalidRequest(f"Missing '{key}' entry")
         if request_obj["jsonrpc"] != "2.0":
             raise EthJsonVersion("Expecting jsonrpc version 2.0")
         if request_obj["method"] in self.__validator_table:
@@ -92,21 +93,21 @@ class Validator(RoundRobinSelector):
     async def __handle_allow_call(self, request: Message) -> Message:
         return await super()._handle_request(request)
 
-    async def __handle_eth_get_balance(self, request: Message) -> Message:
-        self.__ensure_array_params_with_size(request, 2)
-        self.__ensure_array_params_with_types(request, [str, str])
+    async def __handle_eth_accounts(self, request: Message) -> Message:
+        self.__ensure_empty_array_params(self, request)
+        return await super()._handle_request(request)
+
+    async def __handle_eth_chain_id(self, request: Message) -> Message:
+        self.__ensure_empty_array_params(self, request)
+        return await super()._handle_request(request)
+
+    async def __handle_eth_block_number(self, request: Message) -> Message:
+        self.__ensure_empty_array_params(self, request)
         return await super()._handle_request(request)
 
     async def __handle_eth_get_block_by_number(self, request: Message) -> Message:
         self.__ensure_array_params_with_size(request, 2)
         self.__ensure_array_params_with_types(request, [str, bool])
-        return await self.__handle_allow_call(request)
-
-    async def __handle_eth_get_block_transaction_count_by_number(
-        self, request: Message
-    ) -> Message:
-        self.__ensure_array_params_with_size(request, 1)
-        self.__ensure_array_params_with_types(request, [str])
         return await self.__handle_allow_call(request)
 
     async def __handle_eth_get_code(self, request: Message) -> Message:
@@ -117,11 +118,6 @@ class Validator(RoundRobinSelector):
     async def __handle_eth_get_logs(self, request: Message) -> Message:
         self.__ensure_array_params_with_size(request, 1)
         self.__ensure_array_params_with_types(request, [dict])
-        return await self.__handle_allow_call(request)
-
-    async def __handle_eth_get_proof(self, request: Message) -> Message:
-        self.__ensure_array_params_with_size(request, 3)
-        self.__ensure_array_params_with_types(request, [str, list, str])
         return await self.__handle_allow_call(request)
 
     async def __handle_eth_get_storage_at(self, request: Message) -> Message:
@@ -186,6 +182,14 @@ class Validator(RoundRobinSelector):
         self.__ensure_array_params_with_size(request, 2)
         self.__ensure_array_params_with_types(request, [str, list])
         return await self.__handle_allow_call(request)
+
+    def __ensure_empty_array_params(self, request: Message):
+        request_obj = request.as_json()
+        if "params" in request_obj:
+            if not isinstance(request_obj["params"], list):
+                raise EthInvalidParams(f"{request_obj['method']}: wrong params type")
+            if len(request_obj["params"]):
+                raise EthInvalidParams(f"{request_obj['method']}: too many arguments")
 
     def __ensure_array_params_with_size(self, request: Message, size: int):
         request_obj = request.as_json()

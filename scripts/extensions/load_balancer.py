@@ -9,7 +9,7 @@ import os
 from aiohttp import web
 from contextlib import suppress
 
-from extensions.extension_base import Extension, ExtensionBase
+from extensions.abstract.extension_base import Extension, ExtensionBase
 from utils.message import Message
 
 from utils.helpers import log_exception
@@ -44,10 +44,8 @@ API_NOT_SUPPORTED_FILTERS = {
     # Blast
     "Method not found",
     "Capacity exceeded",
-    # Alchemy
-    "is not available",
     # Others
-    "does not exist",
+    "does not exist/is not available",
 }
 
 
@@ -81,7 +79,7 @@ class LoadBalancer(Extension):
                 continue
             try:
                 return self.__check_api_support(
-                    request, await next_handler.do_handle_request(request)
+                    await next_handler.do_handle_request(request), method
                 )
             except Exception as ex:
                 log_exception(logger, ex)
@@ -96,8 +94,8 @@ class LoadBalancer(Extension):
 
     def _get_routes(self) -> list:
         return [
-            ("/lb/statistics", self.__get_statistics),
-            ("/lb/blacklist", self.__get_blacklist),
+            web.post("/lb/statistics", self.__get_statistics),
+            web.post("/lb/blacklist", self.__get_blacklist),
         ]
 
     async def __get_statistics(self, request: web.Request) -> web.Response:
@@ -117,21 +115,14 @@ class LoadBalancer(Extension):
     def _add_next_handler(self, next_handler: ExtensionBase):
         self.__next_handlers.append(next_handler)
 
-    async def _initialize(self):
-        self.__blacklist_task = asyncio.create_task(
-            self.__manage_blacklisted_endpoints()
-        )
-        for handler in self.__next_handlers:
-            await handler.do_initialize()
-
-    async def _cancel(self):
-        self.__blacklist_task.cancel()
+    async def ctx_cleanup(self, _):
+        blacklist_task = asyncio.create_task(self.__manage_blacklisted_endpoints())
+        yield
+        blacklist_task.cancel()
         with suppress(asyncio.CancelledError):
-            await self.__blacklist_task
-        for handler in self.__next_handlers:
-            await handler.do_cancel()
+            await blacklist_task
 
-    def __check_api_support(self, request: Message, response: Message) -> Message:
+    def __check_api_support(self, response: Message, method_name: str) -> Message:
         if len(response) > 512:
             # Optimization: error messages are small in size
             return response
@@ -141,8 +132,7 @@ class LoadBalancer(Extension):
         error_message = response_obj["error"]["message"]
         for msg in API_NOT_SUPPORTED_FILTERS:
             if error_message.find(msg) > -1:
-                request_obj = request.as_json()
-                raise Exception(f"{request_obj['method']} not supported: {response}")
+                raise Exception(f"{method_name} not supported: {response}")
         return response
 
     async def __manage_blacklisted_endpoints(self):
