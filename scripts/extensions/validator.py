@@ -245,3 +245,4 @@ class Validator(RoundRobinSelector):
                 raise EthInternalError()
             # Hide error source to external client
             raise EthException(int(error_obj["code"]))
+        return msg
