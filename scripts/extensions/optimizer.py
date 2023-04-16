@@ -12,7 +12,7 @@ from extensions.abstract.round_robin_selector import RoundRobinSelector
 from utils.message import Message, EthNotSupported, EthInvalidParams
 
 from utils.message import make_request_message, make_message_with_result
-from utils.helpers import log_exception, get_or_default
+from utils.helpers import log_exception, get_or_default, is_response_success
 
 
 #
@@ -32,7 +32,10 @@ class Optimizer(RoundRobinSelector):
         super().__init__(alias, config)
 
         self.__pooling_interval = get_or_default(config, "pooling_interval", 2)
-        self.__retries_count = get_or_default(config, "retries_count", 10)
+        self.__retries_count = get_or_default(config, "retries_count", 5)
+        self.__prefetch_list = get_or_default(
+            config, "prefetch", ["eth_getLogs", "eth_getBlockByNumber"]
+        )
 
         self.__block_number = 0
         self.__optimizations_table = {
@@ -44,6 +47,13 @@ class Optimizer(RoundRobinSelector):
             "eth_getLogs": self.__optimize_eth_get_logs,
             # Trace API
             "trace_block": self.__optimize_trace_block,
+        }
+        self.__prefetch_table = {
+            # Ethereum API
+            "eth_getBlockByNumber": self.__prefetch_eth_get_block_by_number,
+            "eth_getLogs": self.__prefetch_eth_get_logs,
+            # Trace API
+            "trace_block": self.__prefetch_trace_block,
         }
 
     def __repr__(self) -> str:
@@ -61,13 +71,13 @@ class Optimizer(RoundRobinSelector):
         return await super()._handle_request(request)
 
     async def ctx_cleanup(self, _):
-        block_number_fetcher = asyncio.create_task(self.__fetch_block_number())
+        prefetcher = asyncio.create_task(self.__prefetch_data())
 
         yield
 
-        block_number_fetcher.cancel()
+        prefetcher.cancel()
         with suppress(asyncio.CancelledError):
-            await block_number_fetcher
+            await prefetcher
 
     async def __fetch_block_number_with_retries(self) -> int:
         for _ in range(self.__retries_count):
@@ -87,10 +97,53 @@ class Optimizer(RoundRobinSelector):
                     return new_block_number
         return self.__block_number
 
-    async def __fetch_block_number(self):
+    async def __prefetch_with_retries(self, msg: Message):
+        for _ in range(self.__retries_count):
+            try:
+                if is_response_success(await super()._handle_request(msg)):
+                    return
+            except asyncio.CancelledError:
+                # Allow this exception to break the loop during shutdown
+                raise
+            except Exception as ex:
+                log_exception(logger, ex)
+
+    async def __prefetch_eth_get_block_by_number(self, block_number: int):
+        await self.__prefetch_with_retries(
+            make_request_message("eth_getBlockByNumber", [hex(block_number), True])
+        )
+
+    async def __prefetch_eth_get_logs(self, block_number: int):
+        await self.__prefetch_with_retries(
+            make_request_message(
+                "eth_getLogs",
+                [
+                    {
+                        "fromBlock": hex(block_number),
+                        "toBlock": hex(block_number),
+                    }
+                ],
+            )
+        )
+
+    async def __prefetch_trace_block(self, block_number: int):
+        await self.__prefetch_with_retries(
+            make_request_message("trace_block", [hex(block_number)])
+        )
+
+    async def __prefetch_data(self):
         while True:
+            prev_block_number = self.__block_number
             self.__block_number = await self.__fetch_block_number_with_retries()
-            await asyncio.sleep(self.__pooling_interval)
+            if not prev_block_number:
+                prev_block_number = self.__block_number - 1
+            tasks = [asyncio.sleep(self.__pooling_interval)]
+            for index in range(prev_block_number, self.__block_number):
+                block_number = index + 1
+                for method in self.__prefetch_list:
+                    assert method in self.__prefetch_table
+                    tasks.append(self.__prefetch_table[method](block_number))
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def __optimize_eth_accounts(self, _: Message) -> Message:
         return make_message_with_result()

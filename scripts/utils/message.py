@@ -63,6 +63,9 @@ class Message:
             self.__attachments["__hash__"] = hash(json.dumps(adjusted_message))
         return self.__attachments["__hash__"]
 
+    def __eq__(self, value: object) -> bool:
+        return isinstance(value, Message) and hash(self) == hash(value)
+
 
 class EthException(Exception):
     def __init__(self, code: int, data: str = None):

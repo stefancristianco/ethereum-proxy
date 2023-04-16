@@ -13,6 +13,8 @@ from utils.message import (
     EthMethodNotFound,
     EthInvalidParams,
     EthNotSupported,
+    EthInternalError,
+    EthException,
 )
 
 
@@ -97,19 +99,19 @@ class Validator(RoundRobinSelector):
         raise EthMethodNotFound(f"{request_obj['method']} not allowed")
 
     async def __handle_allow_call(self, request: Message) -> Message:
-        return await super()._handle_request(request)
+        return self.__validate_response(await super()._handle_request(request))
 
     async def __handle_eth_accounts(self, request: Message) -> Message:
         self.__ensure_empty_array_params(request)
-        return await super()._handle_request(request)
+        return await self.__handle_allow_call(request)
 
     async def __handle_eth_chain_id(self, request: Message) -> Message:
         self.__ensure_empty_array_params(request)
-        return await super()._handle_request(request)
+        return await self.__handle_allow_call(request)
 
     async def __handle_eth_block_number(self, request: Message) -> Message:
         self.__ensure_empty_array_params(request)
-        return await super()._handle_request(request)
+        return await self.__handle_allow_call(request)
 
     async def __handle_eth_get_block_by_number(self, request: Message) -> Message:
         self.__ensure_array_params_with_size(request, 2)
@@ -229,3 +231,17 @@ class Validator(RoundRobinSelector):
                 raise EthInvalidParams(
                     f"{request_obj['method']}: invalid param[{index}] type"
                 )
+
+    def __validate_response(self, msg: Message) -> Message:
+        if len(msg) > 512:
+            # Optimization: error messages are small in size
+            return msg
+        msg_obj = msg.as_json()
+        if "error" in msg_obj:
+            error_obj = msg_obj["error"]
+            logger.error(f"Error response: {error_obj}")
+            if not "code" in error_obj or not "message" in error_obj:
+                # Non standard error format
+                raise EthInternalError()
+            # Hide error source to external client
+            raise EthException(int(error_obj["code"]))

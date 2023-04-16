@@ -10,7 +10,7 @@ from aiohttp import web
 from contextlib import suppress
 
 from extensions.abstract.extension_base import Extension, ExtensionBase
-from utils.message import Message
+from utils.message import Message, EthMethodNotSupported
 
 from utils.helpers import log_exception, get_or_default
 
@@ -83,7 +83,7 @@ class LoadBalancer(Extension):
                 if not method in self.__blacklist:
                     self.__blacklist[method] = []
                 self.__blacklist[method].append({f"{next_handler}": f"{ex}"})
-        raise Exception(f"{method} not supported")
+        raise EthMethodNotSupported(f"{method} not supported")
 
     def _get_routes(self, prefix: str) -> list:
         return [

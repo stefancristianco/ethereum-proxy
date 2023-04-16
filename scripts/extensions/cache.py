@@ -12,7 +12,7 @@ from contextlib import suppress
 from extensions.abstract.round_robin_selector import RoundRobinSelector
 from utils.message import Message
 
-from utils.helpers import get_or_default
+from utils.helpers import get_or_default, is_response_success
 
 
 #
@@ -101,31 +101,31 @@ class Cache(RoundRobinSelector):
             self.__statistics_dict[method]["cache_hits"] += 1
             return response
 
-        if hash(request) in self.__hash_to_pending_response:
+        if request in self.__hash_to_pending_response:
             """This request is already in progress.
             Must use the same result to reduce RPC calls.
             """
             self.__statistics_dict[method]["cache_hits"] += 1
-            return await self.__hash_to_pending_response[hash(request)]
+            return await self.__hash_to_pending_response[request]
 
         """Future calls for the same information will block on this
         future until request is resolved.
         """
-        self.__hash_to_pending_response[hash(request)] = asyncio.Future()
+        self.__hash_to_pending_response[request] = asyncio.Future()
         try:
             # Retrieve response online
             response = await super()._handle_request(request)
             self.__add_response_to_cache(request, response)
-            self.__hash_to_pending_response[hash(request)].set_result(response)
+            self.__hash_to_pending_response[request].set_result(response)
         except Exception as ex:
             # Make sure to unblock all pending tasks
-            self.__hash_to_pending_response[hash(request)].set_exception(ex)
+            self.__hash_to_pending_response[request].set_exception(ex)
 
         try:
             # Avoid exception if this future is not awaited
-            return await self.__hash_to_pending_response[hash(request)]
+            return await self.__hash_to_pending_response[request]
         finally:
-            del self.__hash_to_pending_response[hash(request)]
+            del self.__hash_to_pending_response[request]
 
     def _get_routes(self, prefix: str) -> list:
         return [web.post(f"{prefix}/statistics", self.__get_statistics)]
@@ -169,30 +169,22 @@ class Cache(RoundRobinSelector):
                 del cache[msg_hash]
             cache_snapshot = dict(cache)
 
-    def __is_message_valid(self, msg: Message) -> bool:
-        """Sanity check the message and decide if it's worth caching it"""
-        if len(msg) > 512:
-            # Optimization: error messages are small in size
-            return True
-        msg_obj = msg.as_json()
-        return "result" in msg_obj and msg_obj["result"]
-
     def __add_response_to_cache(self, request: Message, response: Message):
-        if self.__is_message_valid(response):
+        if is_response_success(response):
             request_obj = request.as_json()
             method = request_obj["method"]
             if not method in NO_CACHE_FILTER:
                 if method in MEDIUM_DURATION_FILTER:
-                    self.__medium_duration_cache[hash(request)] = response
+                    self.__medium_duration_cache[request] = response
                 elif method in LONG_DURATION_FILTER:
-                    self.__long_duration_cache[hash(request)] = response
+                    self.__long_duration_cache[request] = response
                 else:
-                    self.__general_purpose_cache[hash(request)] = response
+                    self.__general_purpose_cache[request] = response
 
     def __retrive_response_from_cache(self, request: Message) -> Message:
-        if hash(request) in self.__medium_duration_cache:
-            return self.__medium_duration_cache[hash(request)]
-        if hash(request) in self.__long_duration_cache:
-            return self.__long_duration_cache[hash(request)]
-        if hash(request) in self.__general_purpose_cache:
-            return self.__general_purpose_cache[hash(request)]
+        if request in self.__medium_duration_cache:
+            return self.__medium_duration_cache[request]
+        if request in self.__long_duration_cache:
+            return self.__long_duration_cache[request]
+        if request in self.__general_purpose_cache:
+            return self.__general_purpose_cache[request]
