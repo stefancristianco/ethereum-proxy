@@ -9,11 +9,11 @@ import os
 from aiohttp import web
 from contextlib import suppress
 
-from extensions.abstract.round_robin_selector import RoundRobinSelector
-from utils.message import Message
+from components.abstract.round_robin_selector import RoundRobinSelector
+from middleware.message import Message
 
-from utils.helpers import get_or_default, is_response_success
-
+from middleware.helpers import get_or_default
+from middleware.message import is_response_success
 
 #
 # Setup logger
@@ -33,6 +33,7 @@ MEDIUM_DURATION_FILTER = {
     "eth_getBlockByNumber",
     "eth_getBlockTransactionCountByHash",
     "eth_getBlockTransactionCountByNumber",
+    "eth_getCode",
     "eth_getLogs",
     # Trace API
     "trace_block",
@@ -127,14 +128,17 @@ class Cache(RoundRobinSelector):
         finally:
             del self.__hash_to_pending_response[request]
 
-    def _get_routes(self, prefix: str) -> list:
-        return [web.post(f"{prefix}/statistics", self.__get_statistics)]
+    def _on_application_setup(self, app: web.Application):
+        app.cleanup_ctx.append(self.__ctx_cleanup)
+        app.add_routes(
+            [web.post(f"/{self.get_alias()}/statistics", self.__get_statistics)]
+        )
 
     async def __get_statistics(self, _: web.Request) -> web.Response:
         """Resolve '/cache/statistics' request"""
         return web.json_response(self.__statistics_dict)
 
-    async def ctx_cleanup(self, _):
+    async def __ctx_cleanup(self, _):
         tasks = [
             asyncio.create_task(
                 self.__cache_cleaner(

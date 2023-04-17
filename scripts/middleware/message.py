@@ -1,6 +1,8 @@
 import json
 import copy
 
+from middleware.helpers import unreachable_code
+
 MESSAGE_HEADER = {"jsonrpc": "2.0", "id": 0}
 RESTRICTED_KEYS = {"__data__", "__json__", "__hash__"}
 ETH_ERROR_CODES = {
@@ -16,17 +18,27 @@ ETH_ERROR_CODES = {
     -32004: "Method not supported",  #           # Method is not implemented                         (non-standard)
     -32005: "Limit exceeded",  #                 # Request exceeds defined limit                     (non-standard)
     -32006: "JSON-RPC version not supported",  # # Version of JSON-RPC protocol is not supported     (non-standard)
+    -32010: "Transaction rejected",  #           # Transaction creation failed (nethermind)          (custom)
+    -32020: "Account locked",  #                 # Account locked (netermind)                        (custom)
     -32050: "Not supported",  #                  # Request not supported by proxy                    (custom)
+    -32015: "Execution error",  #                # (nethermind)                                      (custom)
+    -32016: "Timeout",  #                        # Request exceeds timeout limit (nethermind)        (custom)
+    -32017: "Module timeout",  #                 # Request exceeds timeout limit (nethermind)        (custom)
+    -39001: "Unknown block",  #                  # Unknown block error (nethermind)                  (custom)
 }
 
 
 class Message:
     def __init__(self, data):
-        assert isinstance(data, str) or isinstance(data, bytes)
-        self.__attachments = {"__data__": data}
+        if isinstance(data, (str, bytes)):
+            self.__attachments = {"__data__": data}
+        elif isinstance(data, dict):
+            self.__attachments = {"__json__": data}
+        else:
+            unreachable_code()
 
     def __repr__(self) -> str:
-        return f"Message({self.__attachments['__data__']})"
+        return f"Message({self.as_raw_data()})"
 
     def retrieve(self, key: str):
         assert key not in RESTRICTED_KEYS
@@ -36,9 +48,11 @@ class Message:
         assert key not in RESTRICTED_KEYS
         self.__attachments[key] = value
 
-    def as_json(self):
+    def as_json(self, key: str = None):
         if not "__json__" in self.__attachments:
             self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
+        if key:
+            return self.__attachments["__json__"][key]
         return self.__attachments["__json__"]
 
     def as_json_copy(self):
@@ -47,10 +61,12 @@ class Message:
         return copy.deepcopy(self.__attachments["__json__"])
 
     def as_raw_data(self):
+        if not "__data__" in self.__attachments:
+            self.__attachments["__data__"] = json.dumps(self.__attachments["__json__"])
         return self.__attachments["__data__"]
 
     def __len__(self):
-        return len(self.__attachments["__data__"])
+        return len(self.as_raw_data())
 
     def __hash__(self) -> int:
         """Produce a hash from the message body.
@@ -69,15 +85,19 @@ class Message:
 
 class EthException(Exception):
     def __init__(self, code: int, data: str = None):
-        assert code in ETH_ERROR_CODES
         self.__code = code
         self.__data = data
+        if code in ETH_ERROR_CODES:
+            self.__message = ETH_ERROR_CODES[self.__code]
+        else:
+            # Non standard error code
+            self.__message = "Unknown error"
 
     def as_json(self):
         return {
             "error": {
                 "code": self.__code,
-                "message": ETH_ERROR_CODES[self.__code],
+                "message": self.__message,
                 "data": self.__data,
             }
         }
@@ -148,7 +168,7 @@ class EthNotSupported(EthException):
         super().__init__(-32050, data)
 
 
-def make_message_with_result(result: str = None) -> Message:
+def make_message_with_result(result=None) -> Message:
     return Message(json.dumps({**MESSAGE_HEADER, "result": result}))
 
 
@@ -173,3 +193,11 @@ def make_response_from_exception(ex: Exception) -> Message:
 
 def make_message_copy(msg: Message) -> Message:
     return Message(msg.as_raw_data())
+
+
+def is_response_success(msg: Message) -> bool:
+    if len(msg) > 512:
+        # Optimization: error messages are small in size
+        return True
+    msg_obj = msg.as_json()
+    return "result" in msg_obj and msg_obj["result"]
