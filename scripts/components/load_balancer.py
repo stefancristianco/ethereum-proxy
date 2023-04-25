@@ -9,10 +9,10 @@ import os
 from aiohttp import web
 from contextlib import suppress
 
-from extensions.abstract.extension_base import Extension, ExtensionBase
-from utils.message import Message, EthMethodNotSupported
+from components.abstract.component import ComponentLink, Component
+from middleware.message import Message, EthMethodNotSupported
 
-from utils.helpers import log_exception, get_or_default
+from middleware.helpers import log_exception, get_or_default
 
 
 #
@@ -36,10 +36,11 @@ API_NOT_SUPPORTED_FILTERS = {
     "Capacity exceeded",
     # Others
     "does not exist/is not available",
+    "method is not whitelisted",
 }
 
 
-class LoadBalancer(Extension):
+class LoadBalancer(ComponentLink):
     def __init__(self, alias: str, config: dict):
         super().__init__(alias, config)
 
@@ -56,8 +57,7 @@ class LoadBalancer(Extension):
         return f"LoadBalancer({self.get_alias()})"
 
     async def _handle_request(self, request: Message) -> Message:
-        request_obj = request.as_json()
-        method = request_obj["method"]
+        method = request.as_json("method")
         if not method in self.__method_table:
             self.__method_table[method] = {
                 "hit_count": 0,
@@ -77,7 +77,7 @@ class LoadBalancer(Extension):
                     await next_handler.do_handle_request(request), method
                 )
             except Exception as ex:
-                log_exception(logger, ex)
+                log_exception(logger, ex, f"lb-handler-request - {request}")
                 # Blacklist endpoint on exception
                 self.__method_table[method]["endpoints"].discard(f"{next_handler}")
                 if not method in self.__blacklist:
@@ -85,11 +85,14 @@ class LoadBalancer(Extension):
                 self.__blacklist[method].append({f"{next_handler}": f"{ex}"})
         raise EthMethodNotSupported(f"{method} not supported")
 
-    def _get_routes(self, prefix: str) -> list:
-        return [
-            web.post(f"{prefix}/statistics", self.__get_statistics),
-            web.post(f"{prefix}/blacklist", self.__get_blacklist),
-        ]
+    def _on_application_setup(self, app: web.Application):
+        app.cleanup_ctx.append(self.__ctx_cleanup)
+        app.add_routes(
+            [
+                web.post(f"/{self.get_alias()}/statistics", self.__get_statistics),
+                web.post(f"/{self.get_alias()}/blacklist", self.__get_blacklist),
+            ]
+        )
 
     async def __get_statistics(self, _: web.Request) -> web.Response:
         """Resolve '/.../statistics' request"""
@@ -105,10 +108,10 @@ class LoadBalancer(Extension):
         """Resolve '/.../blacklist' request"""
         return web.json_response(self.__blacklist)
 
-    def _add_next_handler(self, next_handler: ExtensionBase):
+    def _add_next_handler(self, next_handler: Component):
         self.__next_handlers.append(next_handler)
 
-    async def ctx_cleanup(self, _):
+    async def __ctx_cleanup(self, _):
         blacklist_task = asyncio.create_task(self.__manage_blacklisted_endpoints())
 
         yield

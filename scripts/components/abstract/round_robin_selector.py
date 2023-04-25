@@ -1,8 +1,8 @@
-from extensions.abstract.extension_base import Extension, ExtensionBase
-from utils.message import Message
+from components.abstract.component import ComponentLink, Component
+from middleware.message import Message
 
 
-class RoundRobinSelector(Extension):
+class RoundRobinSelector(ComponentLink):
     def __init__(self, alias: str, config: dict):
         super().__init__(alias, config)
 
@@ -23,5 +23,8 @@ class RoundRobinSelector(Extension):
             self.__rr_counter % len(self.__next_handlers)
         ].do_handle_request(request)
 
-    def _add_next_handler(self, next_handler: ExtensionBase):
+    def _add_next_handler(self, next_handler: Component):
         self.__next_handlers.append(next_handler)
+
+    def _on_application_setup(self, _):
+        pass

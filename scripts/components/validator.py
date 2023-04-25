@@ -5,16 +5,14 @@ Validate requests.
 import logging
 import os
 
-from extensions.abstract.round_robin_selector import RoundRobinSelector
-from utils.message import (
+from components.abstract.round_robin_selector import RoundRobinSelector
+from middleware.message import (
     Message,
     EthInvalidRequest,
     EthJsonVersion,
     EthMethodNotFound,
     EthInvalidParams,
     EthNotSupported,
-    EthInternalError,
-    EthException,
 )
 
 
@@ -233,16 +231,17 @@ class Validator(RoundRobinSelector):
                 )
 
     def __validate_response(self, msg: Message) -> Message:
-        if len(msg) > 512:
-            # Optimization: error messages are small in size
-            return msg
-        msg_obj = msg.as_json()
-        if "error" in msg_obj:
-            error_obj = msg_obj["error"]
-            logger.error(f"Error response: {error_obj}")
-            if not "code" in error_obj or not "message" in error_obj:
-                # Non standard error format
-                raise EthInternalError()
-            # Hide error source to external client
-            raise EthException(int(error_obj["code"]))
+        # TODO deactivated until further investigations
+        # if len(msg) > 512:
+        #     # Optimization: error messages are small in size
+        #     return msg
+        # msg_obj = msg.as_json()
+        # if "error" in msg_obj:
+        #     error_obj = msg_obj["error"]
+        #     logger.error(f"Error response: {error_obj}")
+        #     if not "code" in error_obj:
+        #         # Non standard error format
+        #         raise EthInternalError()
+        #     # Hide error source to external client
+        #     raise EthException(int(error_obj["code"]))
         return msg

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
 
-"""
-Proxy for ethereum compatible chains.
-"""
-
 import gc
 import logging
 import os
@@ -12,9 +8,8 @@ import json
 
 from aiohttp import web
 
-from extensions.abstract.extension_base import Extension
-from extensions.abstract.extension_base import get_extension_by_name
-from utils.helpers import get_or_default
+from components.abstract.component import get_component_by_name
+from middleware.helpers import get_or_default
 
 
 #
@@ -45,10 +40,19 @@ if len(sys.argv) != 2:
     show_usage_and_exit()
 
 
-def setup_extension(app: web.Application, ext: Extension, prefix: str):
-    app.add_routes([route for route in ext.do_get_routes(prefix)])
-    app.cleanup_ctx.append(ext.ctx_cleanup)
-    app.on_shutdown.append(ext.on_shutdown)
+def enhance_component_config(config: dict, ext_alias: str) -> dict:
+    ext_config = get_or_default(config["components"][ext_alias], "config", {})
+    if "refs" in ext_config:
+        assert "common-refs" in config
+        for ref in ext_config["refs"]:
+            assert ref in config["common-refs"]
+            # Only fill missing entries
+            for key in config["common-refs"][ref]:
+                if not key in ext_config:
+                    ext_config[key] = config["common-refs"][ref][key]
+        del ext_config["refs"]
+    logger.debug(f"{ext_alias=}: {ext_config=}")
+    return ext_config
 
 
 def main():
@@ -59,16 +63,16 @@ def main():
         config = json.load(input)
 
     # Prepare execution flows
-    extensions = {}
-    for ext_alias in config["extensions"]:
-        extensions[ext_alias] = get_extension_by_name(
-            config["extensions"][ext_alias]["type"]
-        )(ext_alias, get_or_default(config["extensions"][ext_alias], "config", {}))
-        setup_extension(app, extensions[ext_alias], f"/{ext_alias}")
+    components = {}
+    for ext_alias in config["components"]:
+        components[ext_alias] = get_component_by_name(
+            config["components"][ext_alias]["type"]
+        )(ext_alias, enhance_component_config(config, ext_alias))
+        components[ext_alias].do_setup_application(app)
     for grp in config["flows"]:
         for ext_alias in config["flows"][grp]:
             for next_handler in config["flows"][grp][ext_alias]:
-                extensions[ext_alias].do_add_next_handler(extensions[next_handler])
+                components[ext_alias].do_add_next_handler(components[next_handler])
 
     web.run_app(app=app)
 

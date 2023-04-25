@@ -1,18 +1,15 @@
-"""
-Endpoint connection.
-"""
-
 import logging
 import aiohttp
 import asyncio
 import os
 
+from aiohttp import web
 from contextlib import suppress
 
-from utils.message import Message
-from extensions.abstract.extension_base import Extension
+from middleware.abstract.component_base import ComponentBase
+from middleware.message import Message
 
-from utils.helpers import get_or_default, unreachable_code
+from middleware.helpers import unreachable_code
 
 #
 # Setup logger
@@ -26,42 +23,39 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 
-class Endpoint(Extension):
+class JsonRpcEndpoint(ComponentBase):
     class WsClosedException(Exception):
         pass
 
     def __init__(self, alias: str, config: dict):
         super().__init__(alias, config)
 
-        self.__tasks_count = get_or_default(config, "tasks_count", 2)
-        self.__max_queue_size = get_or_default(config, "max_queue_size", 100)
-        self.__max_response_size = get_or_default(
-            config, "max_response_size", 100 * 2**20  # 100MB
-        )
-        self.__response_timeout = get_or_default(config, "max_queue_size", 100)
-        # check ssl certificate
-        self.__check_ssl = get_or_default(config, "check_ssl", False)
-        self.__queue = asyncio.Queue(self.__max_queue_size)
+        self.__tasks_count = self.get_config("tasks_count")
+        self.__max_response_size = self.get_config("max_response_size")
+        self.__response_timeout = self.get_config("response_timeout")
+        self.__check_ssl = self.get_config("check_ssl")
+
+        self.__queue = asyncio.Queue(self.get_config("max_queue_size"))
 
     def __repr__(self) -> str:
-        return f"Endpoint({self.get_alias()}, {self.get_config()})"
+        return f"JsonRpcEndpoint()"
 
-    def __str__(self) -> str:
-        return f"Endpoint({self.get_alias()})"
+    def _on_application_setup(self, app: web.Application):
+        app.cleanup_ctx.append(self.__ctx_cleanup)
 
-    async def _handle_request(self, request: Message) -> Message:
+    async def send_request(self, request: Message) -> Message:
         for _ in range(self.__tasks_count + 1):
             # Enhance the request with a Future to block on until a response is available
-            request.attach("response_future", asyncio.Future())
+            request.attach(self.private_key("response_future"), asyncio.Future())
             try:
                 await self.__queue.put(request)
-                return await request.retrieve("response_future")
-            except Endpoint.WsClosedException as ex:
+                return await request.retrieve(self.private_key("response_future"))
+            except JsonRpcEndpoint.WsClosedException as ex:
                 # Socket connection closed due to inactivity... retry
                 logger.warning(str(ex))
         raise Exception("Max retries exceeded")
 
-    async def ctx_cleanup(self, _):
+    async def __ctx_cleanup(self, _):
         tasks = []
         async with aiohttp.ClientSession() as session:
             config = self.get_config()
@@ -84,13 +78,8 @@ class Endpoint(Extension):
             request_resolver = self.__request_resolver_loop_ws
 
         while True:
-            try:
+            with suppress(Exception):
                 await request_resolver(session, url)
-            except asyncio.CancelledError:
-                # Allow this exception to break the loop during shutdown
-                raise
-            except:
-                pass
 
     async def __request_resolver_loop_http(
         self, session: aiohttp.ClientSession, url: str
@@ -99,11 +88,11 @@ class Endpoint(Extension):
         while True:
             request: Message = await self.__queue.get()
             try:
-                request.retrieve("response_future").set_result(
+                request.retrieve(self.private_key("response_future")).set_result(
                     await self.__process_http_request(request, session, url)
                 )
             except Exception as ex:
-                request.retrieve("response_future").set_exception(ex)
+                request.retrieve(self.private_key("response_future")).set_exception(ex)
                 raise
             finally:
                 self.__queue.task_done()
@@ -118,11 +107,13 @@ class Endpoint(Extension):
             while True:
                 request: Message = await self.__queue.get()
                 try:
-                    request.retrieve("response_future").set_result(
+                    request.retrieve(self.private_key("response_future")).set_result(
                         await self.__process_ws_request(request, ws)
                     )
                 except Exception as ex:
-                    request.retrieve("response_future").set_exception(ex)
+                    request.retrieve(self.private_key("response_future")).set_exception(
+                        ex
+                    )
                     raise
                 finally:
                     self.__queue.task_done()
@@ -156,7 +147,7 @@ class Endpoint(Extension):
             raise Exception("Timeout waiting for response")
         else:
             if msg.type == aiohttp.WSMsgType.CLOSED:
-                raise Endpoint.WsClosedException(f"Ws request status: {msg}")
+                raise JsonRpcEndpoint.WsClosedException(f"Ws request status: {msg}")
             if (
                 msg.type != aiohttp.WSMsgType.BINARY
                 and msg.type != aiohttp.WSMsgType.TEXT
