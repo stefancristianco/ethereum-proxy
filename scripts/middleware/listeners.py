@@ -9,8 +9,7 @@ from contextlib import suppress
 from middleware.message import Message
 from middleware.abstract.component_base import ComponentBase
 
-from middleware.message import make_response_from_exception
-from middleware.helpers import log_on_exception, unreachable_code
+from middleware.helpers import log_and_suppress, unreachable_code
 
 #
 # Setup logger
@@ -26,26 +25,23 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 class WsListener(ComponentBase):
     def __init__(self, alias: str, config: dict, callback):
+        assert "max_request_size" in config
+
         super().__init__(alias, config)
 
         self.__callback = callback
         self.__ws_uuid = 0
         self.__active_ws_connections = {}
 
-        self.__max_request_size = self.get_config("max_request_size")
-
     def __repr__(self) -> str:
-        return f"WsListener({self.__max_request_size})"
-
-    def __str__(self) -> str:
-        return f"WsListener()"
+        return "WsListener()"
 
     async def handle_request(self, request: web.Request):
         """WS request handler"""
         local_ws_uuid = self.__ws_uuid
         self.__ws_uuid += 1
 
-        ws = web.WebSocketResponse(max_msg_size=self.__max_request_size)
+        ws = web.WebSocketResponse(max_msg_size=self.config["max_request_size"])
         await ws.prepare(request)
 
         self.__active_ws_connections[local_ws_uuid] = ws
@@ -81,19 +77,14 @@ class WsListener(ComponentBase):
         The request is added to a queue and the call is suspended until
         the the request is resolved by a consumer tasks.
         """
-        with suppress(ConnectionError):
-            async for msg in ws:
-                if (
-                    msg.type != aiohttp.WSMsgType.BINARY
-                    and msg.type != aiohttp.WSMsgType.TEXT
-                ):
-                    continue
-                try:
-                    message = Message(msg.data)
-                    with log_on_exception(logger, f"ws-forward-request - {message}"):
-                        await self.__send_message(ws, await self.__callback(message))
-                except Exception as ex:
-                    await self.__send_message(ws, make_response_from_exception(ex))
+        async for msg in ws:
+            if (
+                msg.type != aiohttp.WSMsgType.BINARY
+                and msg.type != aiohttp.WSMsgType.TEXT
+            ):
+                continue
+            with log_and_suppress(logger, "ws-forward-request"):
+                await self.__send_message(ws, await self.__callback(Message(msg.data)))
 
 
 class HttpListener(ComponentBase):
@@ -107,14 +98,12 @@ class HttpListener(ComponentBase):
 
     async def handle_request(self, request: web.Request):
         """HTTP request handler"""
-        try:
-            message = Message(await request.read())
-            with log_on_exception(logger, f"http-forward-request - {message}"):
-                return self.__http_send_message(await self.__callback(message))
-        except Exception as ex:
-            return self.__http_send_message(make_response_from_exception(ex))
+        with log_and_suppress(logger, "http-forward-request"):
+            return self.__http_send_message(
+                await self.__callback(Message(await request.read()))
+            )
 
-    def _on_application_setup(self, app: web.Application):
+    def _on_application_setup(self, _):
         pass
 
     def __http_send_message(self, msg: Message):

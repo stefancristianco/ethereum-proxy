@@ -30,8 +30,10 @@ ETH_ERROR_CODES = {
 
 class Message:
     def __init__(self, data):
-        if isinstance(data, (str, bytes)):
+        if isinstance(data, bytes):
             self.__attachments = {"__data__": data}
+        elif isinstance(data, str):
+            self.__attachments = {"__data__": data.encode()}
         elif isinstance(data, dict):
             self.__attachments = {"__json__": data}
         else:
@@ -40,30 +42,20 @@ class Message:
     def __repr__(self) -> str:
         return f"Message({self.as_raw_data()})"
 
-    def retrieve(self, key: str):
+    def __getitem__(self, key: str):
         assert key not in RESTRICTED_KEYS
         return self.__attachments[key]
 
-    def attach(self, key: str, value):
+    def __setitem__(self, key: str, value):
         assert key not in RESTRICTED_KEYS
         self.__attachments[key] = value
 
-    def as_json(self, key: str = None):
-        if not "__json__" in self.__attachments:
-            self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
-        if key:
-            return self.__attachments["__json__"][key]
-        return self.__attachments["__json__"]
+    def __delitem__(self, key: str):
+        assert key not in RESTRICTED_KEYS
+        del self.__attachments[key]
 
-    def as_json_copy(self):
-        if not "__json__" in self.__attachments:
-            self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
-        return copy.deepcopy(self.__attachments["__json__"])
-
-    def as_raw_data(self):
-        if not "__data__" in self.__attachments:
-            self.__attachments["__data__"] = json.dumps(self.__attachments["__json__"])
-        return self.__attachments["__data__"]
+    def __contains__(self, key: str):
+        return key in self.__attachments
 
     def __len__(self):
         return len(self.as_raw_data())
@@ -81,6 +73,23 @@ class Message:
 
     def __eq__(self, value: object) -> bool:
         return isinstance(value, Message) and hash(self) == hash(value)
+
+    def as_json(self, key: str = None):
+        if not "__json__" in self.__attachments:
+            self.__attachments["__json__"] = json.loads(self.__attachments["__data__"])
+        if key:
+            return self.__attachments["__json__"][key]
+        return self.__attachments["__json__"]
+
+    def as_json_copy(self):
+        return copy.deepcopy(self.as_json())
+
+    def as_raw_data(self):
+        if not "__data__" in self.__attachments:
+            self.__attachments["__data__"] = json.dumps(
+                self.__attachments["__json__"]
+            ).encode()
+        return self.__attachments["__data__"]
 
 
 class EthException(Exception):
@@ -169,11 +178,11 @@ class EthNotSupported(EthException):
 
 
 def make_message_with_result(result=None) -> Message:
-    return Message(json.dumps({**MESSAGE_HEADER, "result": result}))
+    return Message({**MESSAGE_HEADER, "result": result})
 
 
 def make_request_message(method: str, params: list = []) -> Message:
-    return Message(json.dumps({**MESSAGE_HEADER, "method": method, "params": params}))
+    return Message({**MESSAGE_HEADER, "method": method, "params": params})
 
 
 def make_response_from_exception(ex: Exception) -> Message:
@@ -182,12 +191,10 @@ def make_response_from_exception(ex: Exception) -> Message:
     elif not issubclass(type(ex), EthException):
         ex = EthInternalError(str(ex))
     return Message(
-        json.dumps(
-            {
-                **MESSAGE_HEADER,
-                **ex.as_json(),
-            }
-        )
+        {
+            **MESSAGE_HEADER,
+            **ex.as_json(),
+        }
     )
 
 
@@ -201,3 +208,12 @@ def is_response_success(msg: Message) -> bool:
         return True
     msg_obj = msg.as_json()
     return "result" in msg_obj and msg_obj["result"]
+
+
+def set_no_cache_tag(msg: Message) -> Message:
+    msg["__no_cache__"] = True
+    return msg
+
+
+def has_no_cache_tag(msg: Message) -> bool:
+    return "__no_cache__" in msg

@@ -10,10 +10,10 @@ class RoundRobinSelector(ComponentLink):
         self.__rr_counter = 0
 
     def __repr__(self) -> str:
-        return f"RoundRobinSelector({self.get_alias()}, {self.get_config()})"
+        return f"RoundRobinSelector({self.alias}, {self.config})"
 
     def __str__(self) -> str:
-        return f"RoundRobinSelector({self.get_alias()})"
+        return f"RoundRobinSelector({self.alias})"
 
     async def _handle_request(self, request: Message) -> Message:
         assert len(self.__next_handlers)

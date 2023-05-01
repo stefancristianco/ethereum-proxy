@@ -8,6 +8,7 @@ import os
 
 from contextlib import suppress
 from aiohttp import web
+from asyncio import Event
 
 from components.abstract.round_robin_selector import RoundRobinSelector
 from middleware.message import (
@@ -21,8 +22,10 @@ from middleware.message import (
     make_request_message,
     make_message_with_result,
     is_response_success,
+    set_no_cache_tag,
 )
-from middleware.helpers import log_and_suppress, get_or_default
+from middleware.helpers import log_and_suppress
+from middleware.abstract.config_base import get_or_default
 
 
 #
@@ -39,14 +42,15 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 class Optimizer(RoundRobinSelector):
     def __init__(self, alias: str, config: dict):
+        config = {
+            "pooling_interval": get_or_default(config, "pooling_interval", 2),
+            "retries_count": get_or_default(config, "retries_count", 5),
+            "max_prefetch_range": get_or_default(config, "max_prefetch_range", 20),
+            "prefetch": get_or_default(
+                config, "prefetch", ["eth_getLogs", "eth_getBlockByNumber"]
+            ),
+        }
         super().__init__(alias, config)
-
-        self.__pooling_interval = get_or_default(config, "pooling_interval", 2)
-        self.__retries_count = get_or_default(config, "retries_count", 5)
-        self.__max_prefetch_range = get_or_default(config, "max_prefetch_range", 20)
-        self.__prefetch_list = get_or_default(
-            config, "prefetch", ["eth_getLogs", "eth_getBlockByNumber"]
-        )
 
         self.__block_number = 0
         self.__optimizations_table = {
@@ -56,6 +60,7 @@ class Optimizer(RoundRobinSelector):
             "eth_blockNumber": self.__optimize_eth_block_number,
             "eth_getBlockByNumber": self.__optimize_eth_get_block_by_number,
             "eth_getLogs": self.__optimize_eth_get_logs,
+            "eth_sendRawTransaction": self.__optimize_eth_send_raw_transaction,
             # Trace API
             "trace_block": self.__optimize_trace_block,
         }
@@ -68,34 +73,39 @@ class Optimizer(RoundRobinSelector):
         }
 
     def __repr__(self) -> str:
-        return f"Optimizer({self.get_alias()}, {self.get_config()})"
+        return f"Optimizer({self.alias}, {self.config})"
 
     def __str__(self) -> str:
-        return f"Optimizer({self.get_alias()})"
+        return f"Optimizer({self.alias})"
 
     async def _handle_request(self, request: Message) -> Message:
         if not self.__block_number:
             raise Exception("Optimizer not ready")
-        request_obj = request.as_json()
-        if request_obj["method"] in self.__optimizations_table:
-            return await self.__optimizations_table[request_obj["method"]](request)
+        method = request.as_json("method")
+        if method in self.__optimizations_table:
+            return await self.__optimizations_table[method](request)
         return await super()._handle_request(request)
 
     def _on_application_setup(self, app: web.Application):
         app.cleanup_ctx.append(self.__ctx_cleanup)
 
     async def __ctx_cleanup(self, _):
-        prefetcher = asyncio.create_task(self.__prefetch_data())
+        self.__block_available = Event()
+        tasks = [
+            asyncio.create_task(self.__prefetch_block_number()),
+            asyncio.create_task(self.__prefetch_data()),
+        ]
 
         yield
 
-        prefetcher.cancel()
+        for task in tasks:
+            task.cancel()
         with suppress(asyncio.CancelledError):
-            await prefetcher
+            await asyncio.gather(*tasks)
 
     async def __fetch_block_number_with_retries(self) -> int:
-        msg = make_request_message("eth_blockNumber")
-        for _ in range(self.__retries_count):
+        msg = set_no_cache_tag(make_request_message("eth_blockNumber"))
+        for _ in range(self.config["retries_count"]):
             with log_and_suppress(logger, f"prefetch-block-number - {msg}"):
                 response = await super()._handle_request(msg)
                 new_block_number = int(response.as_json("result"), 0)
@@ -103,19 +113,19 @@ class Optimizer(RoundRobinSelector):
                     return new_block_number
         return self.__block_number
 
-    async def __prefetch_with_retries(self, msg: Message):
-        for _ in range(self.__retries_count):
-            with log_and_suppress(logger, f"prefetch-data - {msg}"):
+    async def __prefetch_data_common(self, msg: Message):
+        with log_and_suppress(logger, f"prefetch-data-common - {msg}"):
+            for _ in range(self.config["retries_count"]):
                 if is_response_success(await super()._handle_request(msg)):
                     return
 
     async def __prefetch_eth_get_block_by_number(self, block_number: int):
-        await self.__prefetch_with_retries(
+        await self.__prefetch_data_common(
             make_request_message("eth_getBlockByNumber", [hex(block_number), True])
         )
 
     async def __prefetch_eth_get_logs(self, block_number: int):
-        await self.__prefetch_with_retries(
+        await self.__prefetch_data_common(
             make_request_message(
                 "eth_getLogs",
                 [
@@ -128,26 +138,40 @@ class Optimizer(RoundRobinSelector):
         )
 
     async def __prefetch_trace_block(self, block_number: int):
-        await self.__prefetch_with_retries(
+        await self.__prefetch_data_common(
             make_request_message("trace_block", [hex(block_number)])
         )
 
-    async def __prefetch_data(self):
+    async def __prefetch_block_number(self):
         while True:
-            first = self.__block_number + 1
-            self.__block_number = await self.__fetch_block_number_with_retries()
-            last = self.__block_number + 1
-            if last - first > self.__max_prefetch_range:
-                # Fast forward to present block
-                first = last - 1
+            new_block_number = await self.__fetch_block_number_with_retries()
+            if new_block_number > self.__block_number:
+                self.__block_number = new_block_number
+                self.__block_available.set()
+            await asyncio.sleep(self.config["pooling_interval"])
 
-            tasks = [asyncio.sleep(self.__pooling_interval)]
-            # Trigger prefetch in the range [first, last)
-            for block_number in range(first, last):
-                for method in self.__prefetch_list:
+    async def __prefetch_data(self):
+        last_fetched_block = self.__block_number
+        while True:
+            await self.__block_available.wait()
+            self.__block_available.clear()
+
+            if (
+                self.__block_number - last_fetched_block
+                > self.config["max_prefetch_range"]
+            ):
+                # Fast forward to present block
+                last_fetched_block = self.__block_number - 1
+
+            # Trigger prefetch in the range (last_fetched_block, self.__block_number]
+            tasks = []
+            for block_number in range(last_fetched_block + 1, self.__block_number + 1):
+                for method in self.config["prefetch"]:
                     assert method in self.__prefetch_table
                     tasks.append(self.__prefetch_table[method](block_number))
-            await asyncio.gather(*tasks, return_exceptions=True)
+            last_fetched_block = self.__block_number
+
+            await asyncio.gather(*tasks)
 
     async def __optimize_eth_accounts(self, _: Message) -> Message:
         return make_message_with_result()
@@ -207,10 +231,12 @@ class Optimizer(RoundRobinSelector):
     async def __optimize_trace_block(self, request: Message) -> Message:
         return await self.__optimize_request_with_tag_in_params(request, 0)
 
+    async def __optimize_eth_send_raw_transaction(self, request: Message) -> Message:
+        return await super()._handle_request(set_no_cache_tag(request))
+
     async def __optimize_request_without_params(self, request: Message) -> Message:
-        request_obj = request.as_json()
         return await super()._handle_request(
-            make_request_message(request_obj["method"])
+            make_request_message(request.as_json("method"))
         )
 
     async def __optimize_request_with_tag_in_params(

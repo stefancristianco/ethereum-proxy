@@ -6,6 +6,8 @@ from abc import abstractmethod
 from middleware.abstract.component_base import ComponentBase
 from middleware.message import Message
 
+from middleware.helpers import concat
+
 #
 # Setup logger
 #
@@ -40,23 +42,24 @@ class Component(ComponentBase):
 class ComponentLink(Component):
     def __init__(self, alias: str, config: dict):
         super().__init__(alias, config)
+        logger.debug(f"{alias=} {config=}")
 
     def do_add_next_handler(self, next_handler: Component):
-        logger.debug(f"Connecting {self} -> {next_handler}")
         self._add_next_handler(next_handler)
+        logger.debug(f"Connecting {self} -> {next_handler}")
 
     @abstractmethod
     def _add_next_handler(self, _: Component):
         pass
 
 
-def get_component_by_name(ext_name: str) -> ComponentLink:
+def get_component_by_name(comp_name: str) -> ComponentLink:
     """Load component module.
-    :param ext_name: the name of the component to load (e.g. "lb").
+    :param comp_name: the name of the component to load (e.g. "lb").
     :return: the component instance if successful, throws exception otherwise.
     """
     importlib = __import__("importlib")
-    extensions = importlib.import_module(f"components.{ext_name}")
+    extensions = importlib.import_module(f"components.{comp_name}")
     return getattr(
-        extensions, "".join(part.capitalize() for part in ext_name.split("_"))
+        extensions, concat(part.capitalize() for part in comp_name.split("_"))
     )

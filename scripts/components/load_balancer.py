@@ -11,8 +11,10 @@ from contextlib import suppress
 
 from components.abstract.component import ComponentLink, Component
 from middleware.message import Message, EthMethodNotSupported
+from middleware.listeners import HttpListener
 
-from middleware.helpers import log_exception, get_or_default
+from middleware.helpers import log_exception
+from middleware.abstract.config_base import get_or_default
 
 
 #
@@ -30,31 +32,27 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 # List of strings to indentify unsupported API calls
 #
 
-API_NOT_SUPPORTED_FILTERS = {
-    # Blast
-    "Method not found",
-    "Capacity exceeded",
-    # Others
-    "does not exist/is not available",
-    "method is not whitelisted",
-}
-
 
 class LoadBalancer(ComponentLink):
     def __init__(self, alias: str, config: dict):
+        config = {
+            "blacklist_filters": get_or_default(config, "blacklist_filters", []),
+            "blacklist_duration": get_or_default(config, "blacklist_duration", 3600),
+        }
         super().__init__(alias, config)
 
-        self.__blacklist_duration = get_or_default(config, "blacklist_duration", 3600)
+        self.__statistics_listener = HttpListener(alias, config, self.__get_statistics)
+        self.__blacklist_listener = HttpListener(alias, config, self.__get_blacklist)
 
         self.__next_handlers = []
         self.__method_table = {}
         self.__blacklist = {}
 
     def __repr__(self) -> str:
-        return f"LoadBalancer({self.get_alias()}, {self.get_config()})"
+        return f"LoadBalancer({self.alias}, {self.config})"
 
     def __str__(self) -> str:
-        return f"LoadBalancer({self.get_alias()})"
+        return f"LoadBalancer({self.alias})"
 
     async def _handle_request(self, request: Message) -> Message:
         method = request.as_json("method")
@@ -86,15 +84,23 @@ class LoadBalancer(ComponentLink):
         raise EthMethodNotSupported(f"{method} not supported")
 
     def _on_application_setup(self, app: web.Application):
+        self.__statistics_listener.do_setup_application(app)
+        self.__blacklist_listener.do_setup_application(app)
         app.cleanup_ctx.append(self.__ctx_cleanup)
         app.add_routes(
             [
-                web.post(f"/{self.get_alias()}/statistics", self.__get_statistics),
-                web.post(f"/{self.get_alias()}/blacklist", self.__get_blacklist),
+                web.post(
+                    f"/{self.alias}/statistics",
+                    self.__statistics_listener.handle_request,
+                ),
+                web.post(
+                    f"/{self.alias}/blacklist",
+                    self.__blacklist_listener.handle_request,
+                ),
             ]
         )
 
-    async def __get_statistics(self, _: web.Request) -> web.Response:
+    async def __get_statistics(self, _) -> Message:
         """Resolve '/.../statistics' request"""
         output = {}
         for method in self.__method_table:
@@ -102,11 +108,11 @@ class LoadBalancer(ComponentLink):
                 "hit_count": self.__method_table[method]["hit_count"],
                 "endpoints": list(self.__method_table[method]["endpoints"]),
             }
-        return web.json_response(output)
+        return Message(output)
 
-    async def __get_blacklist(self, _: web.Request) -> web.Response:
+    async def __get_blacklist(self, _) -> Message:
         """Resolve '/.../blacklist' request"""
-        return web.json_response(self.__blacklist)
+        return Message(self.__blacklist)
 
     def _add_next_handler(self, next_handler: Component):
         self.__next_handlers.append(next_handler)
@@ -128,14 +134,14 @@ class LoadBalancer(ComponentLink):
         if not "error" in response_obj or not "message" in response_obj["error"]:
             return response
         error_message = response_obj["error"]["message"]
-        for msg in API_NOT_SUPPORTED_FILTERS:
+        for msg in self.config["blacklist_filters"]:
             if error_message.find(msg) > -1:
                 raise Exception(f"{method_name} not supported: {response}")
         return response
 
     async def __manage_blacklisted_endpoints(self):
         while True:
-            await asyncio.sleep(self.__blacklist_duration)
+            await asyncio.sleep(self.config["blacklist_duration"])
             for method in self.__method_table:
                 self.__method_table[method]["endpoints"] = {
                     f"{handler}" for handler in self.__next_handlers

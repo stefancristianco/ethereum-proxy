@@ -11,9 +11,10 @@ from contextlib import suppress
 
 from components.abstract.round_robin_selector import RoundRobinSelector
 from middleware.message import Message
+from middleware.listeners import HttpListener
 
-from middleware.helpers import get_or_default
-from middleware.message import is_response_success
+from middleware.abstract.config_base import get_or_default
+from middleware.message import is_response_success, has_no_cache_tag
 
 #
 # Setup logger
@@ -27,46 +28,22 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 
-MEDIUM_DURATION_FILTER = {
-    # Ethereum API
-    "eth_getBlockByHash",
-    "eth_getBlockByNumber",
-    "eth_getBlockTransactionCountByHash",
-    "eth_getBlockTransactionCountByNumber",
-    "eth_getCode",
-    "eth_getLogs",
-    # Trace API
-    "trace_block",
-}
-
-LONG_DURATION_FILTER = {
-    "eth_chainId",
-    "net_listening",
-    "net_peerCount",
-    "net_version",
-    "web3_clientVersion",
-    "web3_sha3",
-}
-
-NO_CACHE_FILTER = {
-    "eth_blockNumber",
-    "eth_sendRawTransaction",
-    "eth_subscribe",
-    "eth_unsubscribe",
-}
-
-
 class Cache(RoundRobinSelector):
     def __init__(self, alias: str, config: dict):
+        config = {
+            "cache_duration": get_or_default(config, "cache_duration", 2),
+            "medium_duration_filter": get_or_default(
+                config, "medium_duration_filter", []
+            ),
+            "medium_cache_duration": get_or_default(
+                config, "medium_cache_duration", 30
+            ),
+            "long_duration_filter": get_or_default(config, "long_duration_filter", []),
+            "long_cache_duration": get_or_default(config, "long_cache_duration", 86400),
+        }
         super().__init__(alias, config)
 
-        self.__cache_duration = get_or_default(config, "cache_duration", 2)
-        self.__medium_cache_duration = get_or_default(
-            config, "medium_cache_duration", 30
-        )
-        self.__long_cache_duration = get_or_default(
-            config, "long_cache_duration", 86400
-        )
+        self.__statistics_listener = HttpListener(alias, config, self.__get_statistics)
 
         self.__statistics_dict = {}
         self.__hash_to_pending_response = {}
@@ -81,10 +58,10 @@ class Cache(RoundRobinSelector):
         self.__long_duration_cache = {}
 
     def __repr__(self) -> str:
-        return f"Cache({self.get_alias()}, {self.get_config()})"
+        return f"Cache({self.alias}, {self.config})"
 
     def __str__(self) -> str:
-        return f"Cache({self.get_alias()})"
+        return f"Cache({self.alias})"
 
     async def _handle_request(self, request: Message) -> Message:
         """Resolve the given request either from cache or online"""
@@ -129,30 +106,36 @@ class Cache(RoundRobinSelector):
             del self.__hash_to_pending_response[request]
 
     def _on_application_setup(self, app: web.Application):
+        self.__statistics_listener.do_setup_application(app)
         app.cleanup_ctx.append(self.__ctx_cleanup)
         app.add_routes(
-            [web.post(f"/{self.get_alias()}/statistics", self.__get_statistics)]
+            [
+                web.post(
+                    f"/{self.alias}/statistics",
+                    self.__statistics_listener.handle_request,
+                )
+            ]
         )
 
-    async def __get_statistics(self, _: web.Request) -> web.Response:
+    async def __get_statistics(self, _) -> Message:
         """Resolve '/cache/statistics' request"""
-        return web.json_response(self.__statistics_dict)
+        return Message(self.__statistics_dict)
 
     async def __ctx_cleanup(self, _):
         tasks = [
             asyncio.create_task(
                 self.__cache_cleaner(
-                    self.__general_purpose_cache, self.__cache_duration
+                    self.__general_purpose_cache, self.config["cache_duration"]
                 )
             ),
             asyncio.create_task(
                 self.__cache_cleaner(
-                    self.__medium_duration_cache, self.__medium_cache_duration
+                    self.__medium_duration_cache, self.config["medium_cache_duration"]
                 )
             ),
             asyncio.create_task(
                 self.__cache_cleaner(
-                    self.__long_duration_cache, self.__long_cache_duration
+                    self.__long_duration_cache, self.config["long_cache_duration"]
                 )
             ),
         ]
@@ -174,21 +157,20 @@ class Cache(RoundRobinSelector):
             cache_snapshot = dict(cache)
 
     def __add_response_to_cache(self, request: Message, response: Message):
-        if is_response_success(response):
-            request_obj = request.as_json()
-            method = request_obj["method"]
-            if not method in NO_CACHE_FILTER:
-                if method in MEDIUM_DURATION_FILTER:
-                    self.__medium_duration_cache[request] = response
-                elif method in LONG_DURATION_FILTER:
-                    self.__long_duration_cache[request] = response
-                else:
-                    self.__general_purpose_cache[request] = response
+        if not has_no_cache_tag(request) and is_response_success(response):
+            method = request.as_json("method")
+            if method in self.config["medium_duration_filter"]:
+                self.__medium_duration_cache[request] = response
+            elif method in self.config["long_duration_filter"]:
+                self.__long_duration_cache[request] = response
+            else:
+                self.__general_purpose_cache[request] = response
 
     def __retrive_response_from_cache(self, request: Message) -> Message:
-        if request in self.__medium_duration_cache:
-            return self.__medium_duration_cache[request]
-        if request in self.__long_duration_cache:
-            return self.__long_duration_cache[request]
-        if request in self.__general_purpose_cache:
-            return self.__general_purpose_cache[request]
+        if not has_no_cache_tag(request):
+            if request in self.__medium_duration_cache:
+                return self.__medium_duration_cache[request]
+            if request in self.__long_duration_cache:
+                return self.__long_duration_cache[request]
+            if request in self.__general_purpose_cache:
+                return self.__general_purpose_cache[request]

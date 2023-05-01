@@ -1,14 +1,8 @@
 import logging
 
+from contextlib import suppress
+
 from logging import Logger
-
-
-class WithBase:
-    def __enter__(self):
-        pass
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        pass
 
 
 def log_exception(logger: Logger, ex: Exception, ctx: str = None):
@@ -25,31 +19,38 @@ def log_exception(logger: Logger, ex: Exception, ctx: str = None):
         logger.exception("Caught exception")
 
 
-class log_on_exception(WithBase):
+class log_on_exception:
     def __init__(self, logger: Logger, ctx: str = None):
         self.__logger = logger
         self.__ctx = ctx
 
+    def __enter__(self):
+        pass
+
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_value:
             log_exception(self.__logger, exc_value, self.__ctx)
 
 
-class log_and_suppress_exception(WithBase):
-    def __init__(self, logger: Logger, *exceptions, ctx: str = None):
+class log_and_suppress_exception(suppress):
+    def __init__(self, logger: Logger, ctx: str = None, *exceptions):
+        super().__init__(exceptions)
+
         self.__logger = logger
         self.__ctx = ctx
-        self.__exceptions = exceptions
+
+    def __enter__(self):
+        return super().__enter__()
 
     def __exit__(self, exc_type, exc_value, traceback):
         if exc_value:
             log_exception(self.__logger, exc_value, self.__ctx)
-        return exc_type and issubclass(exc_type, self.__exceptions)
+        return super().__exit__(exc_type, exc_value, traceback)
 
 
 class log_and_suppress(log_and_suppress_exception):
     def __init__(self, logger: Logger, ctx: str = None):
-        super().__init__(logger, Exception, ctx=ctx)
+        super().__init__(logger, ctx, Exception)
 
     def __enter__(self):
         return super().__enter__()
@@ -58,13 +59,13 @@ class log_and_suppress(log_and_suppress_exception):
         return super().__exit__(exc_type, exc_value, traceback)
 
 
-def get_or_default(config: dict, key: str, default):
-    if not key in config:
-        return default
-    assert isinstance(config, dict)
-    assert isinstance(config[key], type(default))
-    return config[key]
-
-
 def unreachable_code():
     assert 0
+
+
+def concat(parts: list, sep: str = ""):
+    return sep.join(parts)
+
+
+def concat_bytes(parts: list, sep: bytes = b""):
+    return sep.join(parts)

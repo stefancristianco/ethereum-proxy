@@ -4,12 +4,14 @@ import gc
 import logging
 import os
 import sys
-import json
 
 from aiohttp import web
 
+from middleware.abstract.config_base import ConfigBase
+
 from components.abstract.component import get_component_by_name
-from middleware.helpers import get_or_default
+from middleware.helpers import concat
+from middleware.abstract.config_base import get_or_default
 
 
 #
@@ -31,7 +33,7 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 
 def show_usage_and_exit():
-    logger.error("Usage: python main.py /path/to/config.json")
+    logger.error("Usage: python main.py config_name")
     sys.exit(-1)
 
 
@@ -40,39 +42,36 @@ if len(sys.argv) != 2:
     show_usage_and_exit()
 
 
-def enhance_component_config(config: dict, ext_alias: str) -> dict:
-    ext_config = get_or_default(config["components"][ext_alias], "config", {})
-    if "refs" in ext_config:
-        assert "common-refs" in config
-        for ref in ext_config["refs"]:
-            assert ref in config["common-refs"]
-            # Only fill missing entries
-            for key in config["common-refs"][ref]:
-                if not key in ext_config:
-                    ext_config[key] = config["common-refs"][ref][key]
-        del ext_config["refs"]
-    logger.debug(f"{ext_alias=}: {ext_config=}")
-    return ext_config
+def get_config_by_name(config_name: str):
+    """Load configuration module.
+    :param config_name: the name of the config module to load (e.g. "module_name").
+    :return: the config instance if successful, throws exception otherwise.
+    """
+    importlib = __import__("importlib")
+    module = importlib.import_module(f"config.{config_name}")
+    clazz = getattr(
+        module, concat(part.capitalize() for part in config_name.split("_"))
+    )
+    assert issubclass(clazz, ConfigBase)
+    return clazz().config()
 
 
 def main():
-    app = web.Application()
+    config = get_config_by_name(sys.argv[1])
 
-    config = {}
-    with open(sys.argv[1]) as input:
-        config = json.load(input)
+    app = web.Application()
 
     # Prepare execution flows
     components = {}
-    for ext_alias in config["components"]:
-        components[ext_alias] = get_component_by_name(
-            config["components"][ext_alias]["type"]
-        )(ext_alias, enhance_component_config(config, ext_alias))
-        components[ext_alias].do_setup_application(app)
+    for alias in config["components"]:
+        components[alias] = get_component_by_name(config["components"][alias]["type"])(
+            alias, get_or_default(config["components"][alias], "config", {})
+        )
+        components[alias].do_setup_application(app)
     for grp in config["flows"]:
-        for ext_alias in config["flows"][grp]:
-            for next_handler in config["flows"][grp][ext_alias]:
-                components[ext_alias].do_add_next_handler(components[next_handler])
+        for alias in config["flows"][grp]:
+            for next_handler in config["flows"][grp][alias]:
+                components[alias].do_add_next_handler(components[next_handler])
 
     web.run_app(app=app)
 

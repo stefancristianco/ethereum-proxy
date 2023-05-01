@@ -28,14 +28,16 @@ class JsonRpcEndpoint(ComponentBase):
         pass
 
     def __init__(self, alias: str, config: dict):
+        assert "tasks_count" in config
+        assert "max_response_size" in config
+        assert "response_timeout" in config
+        assert "check_ssl" in config
+        assert "max_queue_size" in config
+        assert "url" in config
+
         super().__init__(alias, config)
 
-        self.__tasks_count = self.get_config("tasks_count")
-        self.__max_response_size = self.get_config("max_response_size")
-        self.__response_timeout = self.get_config("response_timeout")
-        self.__check_ssl = self.get_config("check_ssl")
-
-        self.__queue = asyncio.Queue(self.get_config("max_queue_size"))
+        self.__queue = asyncio.Queue(self.config["max_queue_size"])
 
     def __repr__(self) -> str:
         return f"JsonRpcEndpoint()"
@@ -44,12 +46,12 @@ class JsonRpcEndpoint(ComponentBase):
         app.cleanup_ctx.append(self.__ctx_cleanup)
 
     async def send_request(self, request: Message) -> Message:
-        for _ in range(self.__tasks_count + 1):
+        for _ in range(self.config["tasks_count"] + 1):
             # Enhance the request with a Future to block on until a response is available
-            request.attach(self.private_key("response_future"), asyncio.Future())
+            request[self.private_key("response_future")] = asyncio.Future()
             try:
                 await self.__queue.put(request)
-                return await request.retrieve(self.private_key("response_future"))
+                return await request[self.private_key("response_future")]
             except JsonRpcEndpoint.WsClosedException as ex:
                 # Socket connection closed due to inactivity... retry
                 logger.warning(str(ex))
@@ -58,10 +60,11 @@ class JsonRpcEndpoint(ComponentBase):
     async def __ctx_cleanup(self, _):
         tasks = []
         async with aiohttp.ClientSession() as session:
-            config = self.get_config()
-            for _ in range(self.__tasks_count):
+            for _ in range(self.config["tasks_count"]):
                 tasks.append(
-                    asyncio.create_task(self.__request_resolver(session, config["url"]))
+                    asyncio.create_task(
+                        self.__request_resolver(session, self.config["url"])
+                    )
                 )
 
             yield
@@ -88,11 +91,11 @@ class JsonRpcEndpoint(ComponentBase):
         while True:
             request: Message = await self.__queue.get()
             try:
-                request.retrieve(self.private_key("response_future")).set_result(
+                request[self.private_key("response_future")].set_result(
                     await self.__process_http_request(request, session, url)
                 )
             except Exception as ex:
-                request.retrieve(self.private_key("response_future")).set_exception(ex)
+                request[self.private_key("response_future")].set_exception(ex)
                 raise
             finally:
                 self.__queue.task_done()
@@ -102,18 +105,18 @@ class JsonRpcEndpoint(ComponentBase):
     ):
         """Endless request processing loop for ws urls"""
         async with session.ws_connect(
-            url, max_msg_size=self.__max_response_size, verify_ssl=self.__check_ssl
+            url,
+            max_msg_size=self.config["max_response_size"],
+            verify_ssl=self.config["check_ssl"],
         ) as ws:
             while True:
                 request: Message = await self.__queue.get()
                 try:
-                    request.retrieve(self.private_key("response_future")).set_result(
+                    request[self.private_key("response_future")].set_result(
                         await self.__process_ws_request(request, ws)
                     )
                 except Exception as ex:
-                    request.retrieve(self.private_key("response_future")).set_exception(
-                        ex
-                    )
+                    request[self.private_key("response_future")].set_exception(ex)
                     raise
                 finally:
                     self.__queue.task_done()
@@ -127,8 +130,8 @@ class JsonRpcEndpoint(ComponentBase):
                 url,
                 headers=headers,
                 data=request.as_raw_data(),
-                verify_ssl=self.__check_ssl,
-                timeout=self.__response_timeout,
+                verify_ssl=self.config["check_ssl"],
+                timeout=self.config["response_timeout"],
                 raise_for_status=True,
             ) as response:
                 return Message(await response.read())
@@ -141,7 +144,7 @@ class JsonRpcEndpoint(ComponentBase):
     ) -> Message:
         await self.__ws_send_message(ws, request)
         try:
-            msg = await ws.receive(timeout=self.__response_timeout)
+            msg = await ws.receive(timeout=self.config["response_timeout"])
         except asyncio.TimeoutError:
             # Enhance error message
             raise Exception("Timeout waiting for response")

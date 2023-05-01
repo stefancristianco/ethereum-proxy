@@ -78,10 +78,10 @@ class Validator(RoundRobinSelector):
         }
 
     def __repr__(self) -> str:
-        return f"Validator({self.get_alias()}, {self.get_config()})"
+        return f"Validator({self.alias}, {self.config})"
 
     def __str__(self) -> str:
-        return f"Validator({self.get_alias()})"
+        return f"Validator({self.alias})"
 
     async def _handle_request(self, request: Message) -> Message:
         request_obj = request.as_json()
@@ -204,7 +204,7 @@ class Validator(RoundRobinSelector):
         if "params" in request_obj:
             if not isinstance(request_obj["params"], list):
                 raise EthInvalidParams(f"{request_obj['method']}: wrong params type")
-            if len(request_obj["params"]):
+            if request_obj["params"]:
                 raise EthInvalidParams(f"{request_obj['method']}: too many arguments")
 
     def __ensure_array_params_with_size(self, request: Message, size: int):

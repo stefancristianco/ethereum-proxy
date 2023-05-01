@@ -9,12 +9,12 @@ class ConfigBase(ABC):
         self.__alias = alias
         self.__config = config
 
-    def get_alias(self) -> str:
+    @property
+    def alias(self) -> str:
         return self.__alias
 
-    def get_config(self, key: str = None):
-        if key:
-            return self.__config[key]
+    @property
+    def config(self) -> dict:
         return self.__config
 
     def private_key(self, key: str) -> str:
