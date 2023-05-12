@@ -15,6 +15,8 @@ from middleware.message import (
     EthNotSupported,
 )
 
+from middleware.abstract.config_base import get_or_default
+from middleware.message import has_source_ws
 
 #
 # Setup logger
@@ -30,6 +32,7 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 class Validator(RoundRobinSelector):
     def __init__(self, alias: str, config: dict):
+        config = {"allow_pubsub": get_or_default(config, "allow_pubsub", False)}
         super().__init__(alias, config)
 
         self.__validator_table = {
@@ -61,6 +64,8 @@ class Validator(RoundRobinSelector):
             "eth_getUncleCountByBlockNumber": self.__handle_eth_get_uncle_count_by_block_number,
             "eth_maxPriorityFeePerGas": self.__handle_allow_call,
             "eth_sendRawTransaction": self.__handle_allow_call,
+            "eth_subscribe": self.__handle_eth_subscribe,
+            "eth_unsubscribe": self.__handle_eth_unsubscribe,
             "net_listening": self.__handle_allow_call,
             "net_peerCount": self.__handle_allow_call,
             "net_version": self.__handle_allow_call,
@@ -199,11 +204,39 @@ class Validator(RoundRobinSelector):
         self.__ensure_array_params_with_types(request, [str, list])
         return await self.__handle_allow_call(request)
 
+    async def __handle_eth_subscribe(self, request: Message) -> Message:
+        if not self.config["allow_pubsub"]:
+            raise EthNotSupported("Notifications not supported")
+        if not has_source_ws(request):
+            raise EthNotSupported("Notifications supported only over WS")
+
+        self.__ensure_array_params_with_size(request, 1)
+        self.__ensure_array_params_with_types(request, [str])
+
+        params = request.as_json("params")
+        if params[0] not in ["newHeads", "logs"]:
+            raise EthInvalidParams(
+                f"{request.as_json('method')}: event type '{params[0]}' not supported"
+            )
+
+        return await self.__handle_allow_call(request)
+
+    async def __handle_eth_unsubscribe(self, request: Message) -> Message:
+        if not self.config["allow_pubsub"]:
+            raise EthNotSupported("Notifications not supported")
+        if not has_source_ws(request):
+            raise EthNotSupported("Notifications supported only over WS")
+
+        self.__ensure_array_params_with_size(request, 1)
+        self.__ensure_array_params_with_types(request, [str])
+
+        return await self.__handle_allow_call(request)
+
     def __ensure_empty_array_params(self, request: Message):
         request_obj = request.as_json()
         if "params" in request_obj:
             if not isinstance(request_obj["params"], list):
-                raise EthInvalidParams(f"{request_obj['method']}: wrong params type")
+                raise EthInvalidParams(f"{request_obj['method']}: wrong param type")
             if request_obj["params"]:
                 raise EthInvalidParams(f"{request_obj['method']}: too many arguments")
 
@@ -212,7 +245,7 @@ class Validator(RoundRobinSelector):
         if not "params" in request_obj:
             raise EthInvalidParams(f"{request_obj['method']}: missing params")
         if not isinstance(request_obj["params"], list):
-            raise EthInvalidParams(f"{request_obj['method']}: wrong params type")
+            raise EthInvalidParams(f"{request_obj['method']}: wrong param type")
         if len(request_obj["params"]) < size:
             raise EthInvalidParams(
                 f"{request_obj['method']}: expected {size} params, but found {len(request_obj['params'])}"

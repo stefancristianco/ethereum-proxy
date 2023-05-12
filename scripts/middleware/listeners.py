@@ -10,6 +10,7 @@ from middleware.message import Message
 from middleware.abstract.component_base import ComponentBase
 
 from middleware.helpers import log_and_suppress, unreachable_code
+from middleware.message import make_ws_message, make_http_message
 
 #
 # Setup logger
@@ -84,7 +85,9 @@ class WsListener(ComponentBase):
             ):
                 continue
             with log_and_suppress(logger, "ws-forward-request"):
-                await self.__send_message(ws, await self.__callback(Message(msg.data)))
+                await self.__send_message(
+                    ws, await self.__callback(make_ws_message(msg.data, ws))
+                )
 
 
 class HttpListener(ComponentBase):
@@ -100,7 +103,7 @@ class HttpListener(ComponentBase):
         """HTTP request handler"""
         with log_and_suppress(logger, "http-forward-request"):
             return self.__http_send_message(
-                await self.__callback(Message(await request.read()))
+                await self.__callback(make_http_message(await request.read()))
             )
 
     def _on_application_setup(self, _):

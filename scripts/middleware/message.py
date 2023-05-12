@@ -217,3 +217,27 @@ def set_no_cache_tag(msg: Message) -> Message:
 
 def has_no_cache_tag(msg: Message) -> bool:
     return "__no_cache__" in msg
+
+
+def make_ws_message(data, ws) -> Message:
+    msg = Message(data)
+    msg["__source_ws__"] = ws
+    return msg
+
+
+def has_source_ws(msg: Message) -> bool:
+    return "__source_ws__" in msg
+
+
+def get_source_ws(msg: Message):
+    return msg["__source_ws__"]
+
+
+def make_http_message(data) -> Message:
+    msg = Message(data)
+    msg["__source_http__"] = True
+    return msg
+
+
+def has_source_http(msg: Message) -> bool:
+    return "__source_http__" in msg

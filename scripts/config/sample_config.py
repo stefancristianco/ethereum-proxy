@@ -10,7 +10,8 @@ class SampleConfig(ConfigBase):
         return {
             "components": {
                 "receiver": {"type": "receiver"},
-                "validator": {"type": "validator"},
+                "validator": {"type": "validator", "config": {"allow_pubsub": True}},
+                "pubsub": {"type": "pub_sub"},
                 "optimizer": {
                     "type": "optimizer",
                     "config": {
@@ -18,7 +19,6 @@ class SampleConfig(ConfigBase):
                         "prefetch": [
                             "eth_getLogs",
                             "eth_getBlockByNumber",
-                            "trace_block",
                         ],
                     },
                 },
@@ -58,7 +58,8 @@ class SampleConfig(ConfigBase):
             "flows": {
                 "proxy": {
                     "receiver": ["validator"],
-                    "validator": ["optimizer"],
+                    "validator": ["pubsub"],
+                    "pubsub": ["optimizer"],
                     "optimizer": ["cache"],
                     "debug": ["cache"],
                     "cache": ["lb"],
