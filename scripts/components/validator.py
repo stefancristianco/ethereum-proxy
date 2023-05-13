@@ -15,7 +15,7 @@ from middleware.message import (
     EthNotSupported,
 )
 
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import get_or_default
 from middleware.message import has_source_ws
 
 #

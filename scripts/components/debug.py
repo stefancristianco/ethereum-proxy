@@ -8,7 +8,7 @@ import os
 from components.abstract.round_robin_selector import RoundRobinSelector
 from middleware.message import Message
 
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import get_or_default
 
 
 #

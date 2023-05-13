@@ -7,11 +7,8 @@ import sys
 
 from aiohttp import web
 
-from middleware.abstract.config_base import ConfigBase
-
 from components.abstract.component import get_component_by_name
-from middleware.helpers import concat
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import concat, get_or_default
 
 
 #
@@ -52,7 +49,6 @@ def get_config_by_name(config_name: str):
     clazz = getattr(
         module, concat(part.capitalize() for part in config_name.split("_"))
     )
-    assert issubclass(clazz, ConfigBase)
     return clazz().config()
 
 

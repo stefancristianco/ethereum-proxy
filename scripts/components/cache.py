@@ -13,7 +13,7 @@ from components.abstract.round_robin_selector import RoundRobinSelector
 from middleware.message import Message
 from middleware.listeners import HttpListener
 
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import get_or_default
 from middleware.message import is_response_success, has_no_cache_tag
 
 #

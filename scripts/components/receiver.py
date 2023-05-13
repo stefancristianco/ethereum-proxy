@@ -12,9 +12,8 @@ from middleware.message import Message
 from middleware.listeners import WsListener, HttpListener
 from components.abstract.round_robin_selector import RoundRobinSelector
 
-from middleware.helpers import log_on_exception, concat_bytes
+from middleware.helpers import log_on_exception, concat_bytes, get_or_default
 from middleware.message import make_response_from_exception
-from middleware.abstract.config_base import get_or_default
 
 #
 # Setup logger

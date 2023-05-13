@@ -11,8 +11,7 @@ from middleware.message import Message
 from middleware.endpoints import JsonRpcEndpoint
 from components.abstract.component import ComponentLink
 
-from middleware.helpers import unreachable_code
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import unreachable_code, get_or_default
 
 #
 # Setup logger

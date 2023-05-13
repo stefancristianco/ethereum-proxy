@@ -1,10 +1,8 @@
-from middleware.abstract.config_base import ConfigBase
-
 from config.lb_blacklist_config import ref_blacklist_filters
 from config.cache_filter_config import ref_cache_filters
 
 
-class SampleConfig(ConfigBase):
+class SampleConfig:
     def config(self) -> dict:
         ref_sample = {"tasks_count": 2}
         return {

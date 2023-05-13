@@ -24,8 +24,7 @@ from middleware.message import (
     is_response_success,
     set_no_cache_tag,
 )
-from middleware.helpers import log_and_suppress
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import log_and_suppress, get_or_default
 
 
 #
@@ -46,6 +45,7 @@ class Optimizer(RoundRobinSelector):
             "pooling_interval": get_or_default(config, "pooling_interval", 2),
             "retries_count": get_or_default(config, "retries_count", 5),
             "max_prefetch_range": get_or_default(config, "max_prefetch_range", 20),
+            "max_allowed_range": get_or_default(config, "max_allowed_range", 100),
             "prefetch": get_or_default(
                 config, "prefetch", ["eth_getLogs", "eth_getBlockByNumber"]
             ),
@@ -186,8 +186,9 @@ class Optimizer(RoundRobinSelector):
         return await self.__optimize_request_with_tag_in_params(request, 0)
 
     async def __optimize_eth_get_logs(self, request: Message) -> Message:
-        request_obj = request.as_json()
+        do_not_cache = False
         # Normalize request for better cache use
+        request_obj = request.as_json()
         normalized_args = {}
         original_args = request_obj["params"][0]
         if "blockHash" in original_args:
@@ -216,17 +217,24 @@ class Optimizer(RoundRobinSelector):
                     raise EthInvalidParams(
                         f"{request_obj['method']}: invalid block range"
                     )
-                raise EthLimitExceeded(
-                    f"{request_obj['method']}: range too big, only single entry accepted"
-                )
+                if _from - _to > self.config["max_allowed_range"]:
+                    raise EthLimitExceeded(
+                        f"{request_obj['method']}: max allowed range is {self.config['max_allowed_range']}"
+                    )
+                do_not_cache = True
             if _from > self.__block_number:
                 # Optimization: return null result for block in the future
                 return make_message_with_result()
-        if "topics" in original_args:
+        if "topics" in original_args and original_args["topics"]:
             normalized_args["topics"] = original_args["topics"]
-        return await super()._handle_request(
-            make_request_message(request_obj["method"], [normalized_args])
+            do_not_cache = True
+
+        optimized_request = make_request_message(
+            request_obj["method"], [normalized_args]
         )
+        if do_not_cache:
+            optimized_request = set_no_cache_tag(optimized_request)
+        return await super()._handle_request(optimized_request)
 
     async def __optimize_trace_block(self, request: Message) -> Message:
         return await self.__optimize_request_with_tag_in_params(request, 0)

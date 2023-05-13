@@ -13,8 +13,7 @@ from components.abstract.component import ComponentLink, Component
 from middleware.message import Message, EthMethodNotSupported
 from middleware.listeners import HttpListener
 
-from middleware.helpers import log_exception
-from middleware.abstract.config_base import get_or_default
+from middleware.helpers import log_exception, get_or_default
 
 
 #

@@ -69,3 +69,11 @@ def concat(parts: list, sep: str = ""):
 
 def concat_bytes(parts: list, sep: bytes = b""):
     return sep.join(parts)
+
+
+def get_or_default(config: dict, key: str, default):
+    assert isinstance(config, dict)
+    if not key in config:
+        return default
+    assert isinstance(config[key], type(default))
+    return config[key]
