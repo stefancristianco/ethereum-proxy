@@ -17,6 +17,7 @@ class SampleConfig:
                         "prefetch": [
                             "eth_getLogs",
                             "eth_getBlockByNumber",
+                            "trace_block",
                         ],
                     },
                 },

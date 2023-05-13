@@ -13,7 +13,7 @@ from components.abstract.component import ComponentLink, Component
 from middleware.message import Message, EthMethodNotSupported
 from middleware.listeners import HttpListener
 
-from middleware.helpers import log_exception, get_or_default
+from middleware.helpers import log_and_suppress, log_exception, get_or_default
 
 
 #
@@ -33,6 +33,9 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 
 class LoadBalancer(ComponentLink):
+    class ApiNotSupported(Exception):
+        pass
+
     def __init__(self, alias: str, config: dict):
         config = {
             "blacklist_filters": get_or_default(config, "blacklist_filters", []),
@@ -65,21 +68,21 @@ class LoadBalancer(ComponentLink):
         first = self.__method_table[method]["hit_count"]
         last = first + len(self.__next_handlers)
         for index in range(first, last):
-            next_handler = self.__next_handlers[index % len(self.__next_handlers)]
-            if not f"{next_handler}" in self.__method_table[method]["endpoints"]:
-                # This handler was blacklisted for current method
-                continue
-            try:
-                return self.__check_api_support(
-                    await next_handler.do_handle_request(request), method
-                )
-            except Exception as ex:
-                log_exception(logger, ex, f"lb-handler-request - {request}")
-                # Blacklist endpoint on exception
-                self.__method_table[method]["endpoints"].discard(f"{next_handler}")
-                if not method in self.__blacklist:
-                    self.__blacklist[method] = []
-                self.__blacklist[method].append({f"{next_handler}": f"{ex}"})
+            with log_and_suppress(logger, f"lb-handler-request - {request}"):
+                next_handler = self.__next_handlers[index % len(self.__next_handlers)]
+                if not f"{next_handler}" in self.__method_table[method]["endpoints"]:
+                    # This handler was blacklisted for current method
+                    continue
+                try:
+                    return self.__check_api_support(
+                        await next_handler.do_handle_request(request), method
+                    )
+                except LoadBalancer.ApiNotSupported as ex:
+                    logger.warning(f"Blacklisting {next_handler} - {ex}")
+                    self.__method_table[method]["endpoints"].discard(f"{next_handler}")
+                    if not method in self.__blacklist:
+                        self.__blacklist[method] = []
+                    self.__blacklist[method].append({f"{next_handler}": f"{ex}"})
         raise EthMethodNotSupported(f"{method} not supported")
 
     def _on_application_setup(self, app: web.Application):
@@ -135,7 +138,9 @@ class LoadBalancer(ComponentLink):
         error_message = response_obj["error"]["message"]
         for msg in self.config["blacklist_filters"]:
             if error_message.find(msg) > -1:
-                raise Exception(f"{method_name} not supported: {response}")
+                raise LoadBalancer.ApiNotSupported(
+                    f"{method_name} not supported: {response}"
+                )
         return response
 
     async def __manage_blacklisted_endpoints(self):
