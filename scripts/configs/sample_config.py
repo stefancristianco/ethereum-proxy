@@ -1,5 +1,5 @@
-from config.lb_blacklist_config import ref_blacklist_filters
-from config.cache_filter_config import ref_cache_filters
+from configs.lb_blacklist_config import ref_blacklist_filters
+from configs.cache_filter_config import ref_cache_filters
 
 
 class SampleConfig:

@@ -45,7 +45,7 @@ def get_config_by_name(config_name: str):
     :return: the config instance if successful, throws exception otherwise.
     """
     importlib = __import__("importlib")
-    module = importlib.import_module(f"config.{config_name}")
+    module = importlib.import_module(f"configs.{config_name}")
     clazz = getattr(
         module, concat(part.capitalize() for part in config_name.split("_"))
     )
