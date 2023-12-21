@@ -25,7 +25,7 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 class Debug(RoundRobinSelector):
     def __init__(self, alias: str, config: dict):
-        config = {"select_methods": get_or_default(config, "select_methods", [])}
+        config["select_methods"] = get_or_default(config, "select_methods", [])
         super().__init__(alias, config)
 
     def __repr__(self) -> str:

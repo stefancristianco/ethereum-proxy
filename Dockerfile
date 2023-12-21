@@ -6,6 +6,7 @@ FROM python:3.10-slim-bullseye as base
 
 # Setup env
 ENV PATH=/home/admin/.local/bin:$PATH
+ENV PYTHONPATH=scripts/:$PYTHONPATH
 
 # Install OS packages
 RUN apt-get update \
@@ -24,9 +25,8 @@ COPY --chown=admin:admin scripts /home/admin/scripts
 USER admin
 
 # Install development tools
-RUN pip install aiohttp \
-    && pip install aiodns \
+RUN pip install aiohttp aiodns \
     && pip install black \
-    && pip install argparse
+    && pip install pytest pytest-cov pytest-asyncio
 
 ENTRYPOINT ["python", "/home/admin/scripts/main.py"]

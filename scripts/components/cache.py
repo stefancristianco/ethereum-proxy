@@ -11,9 +11,8 @@ from contextlib import suppress
 
 from components.abstract.round_robin_selector import RoundRobinSelector
 from middleware.message import Message
-from middleware.listeners import HttpListener
 
-from middleware.helpers import get_or_default
+from middleware.helpers import get_or_default, entrypoint
 from middleware.message import is_response_success, has_no_cache_tag
 
 #
@@ -30,20 +29,20 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 class Cache(RoundRobinSelector):
     def __init__(self, alias: str, config: dict):
-        config = {
-            "cache_duration": get_or_default(config, "cache_duration", 2),
-            "medium_duration_filter": get_or_default(
-                config, "medium_duration_filter", []
-            ),
-            "medium_cache_duration": get_or_default(
-                config, "medium_cache_duration", 30
-            ),
-            "long_duration_filter": get_or_default(config, "long_duration_filter", []),
-            "long_cache_duration": get_or_default(config, "long_cache_duration", 86400),
-        }
+        config["cache_duration"] = get_or_default(config, "cache_duration", 2)
+        config["medium_duration_filter"] = get_or_default(
+            config, "medium_duration_filter", []
+        )
+        config["medium_cache_duration"] = get_or_default(
+            config, "medium_cache_duration", 30
+        )
+        config["long_duration_filter"] = get_or_default(
+            config, "long_duration_filter", []
+        )
+        config["long_cache_duration"] = get_or_default(
+            config, "long_cache_duration", 86400
+        )
         super().__init__(alias, config)
-
-        self.__statistics_listener = HttpListener(alias, config, self.__get_statistics)
 
         self.__statistics_dict = {}
         self.__hash_to_pending_response = {}
@@ -106,18 +105,10 @@ class Cache(RoundRobinSelector):
             del self.__hash_to_pending_response[request]
 
     def _on_application_setup(self, app: web.Application):
-        self.__statistics_listener.do_setup_application(app)
         app.cleanup_ctx.append(self.__ctx_cleanup)
-        app.add_routes(
-            [
-                web.post(
-                    f"/{self.alias}/statistics",
-                    self.__statistics_listener.handle_request,
-                )
-            ]
-        )
 
-    async def __get_statistics(self, _) -> Message:
+    @entrypoint
+    async def statistics(self, _) -> Message:
         """Resolve '/cache/statistics' request"""
         return Message(self.__statistics_dict)
 

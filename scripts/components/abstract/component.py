@@ -1,3 +1,4 @@
+import importlib
 import logging
 import os
 
@@ -40,6 +41,8 @@ class Component(ComponentBase):
 
 
 class ComponentLink(Component):
+    """Component extended functionality"""
+
     def __init__(self, alias: str, config: dict):
         super().__init__(alias, config)
         logger.debug(f"{alias=} {config=}")
@@ -53,12 +56,20 @@ class ComponentLink(Component):
         pass
 
 
-def get_component_by_name(comp_name: str) -> ComponentLink:
-    """Load component module.
-    :param comp_name: the name of the component to load (e.g. "lb").
-    :return: the component instance if successful, throws exception otherwise.
+def get_component_by_name(comp_name: str) -> Component:
     """
-    importlib = __import__("importlib")
+    Dynamically loads a component module and returns an instance of the component.
+
+    Args:
+        comp_name (str): The name of the component module to load (e.g., "module_name").
+
+    Returns:
+        object: An instance of the component class if successful.
+
+    Raises:
+        ImportError: If the component module cannot be found or loaded.
+        AttributeError: If the component class cannot be found in the module.
+    """
     extensions = importlib.import_module(f"components.{comp_name}")
     return getattr(
         extensions, concat(part.capitalize() for part in comp_name.split("_"))

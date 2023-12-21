@@ -10,10 +10,14 @@ from aiohttp import web
 from contextlib import suppress
 
 from components.abstract.component import ComponentLink, Component
-from middleware.message import Message, EthMethodNotSupported
-from middleware.listeners import HttpListener
+from middleware.message import (
+    Message,
+    EthMethodNotSupported,
+    EthMethodNotFound,
+    EthCapacityExceeded,
+)
 
-from middleware.helpers import log_and_suppress, log_exception, get_or_default
+from middleware.helpers import log_and_suppress, get_or_default, entrypoint
 
 
 #
@@ -33,18 +37,11 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 
 class LoadBalancer(ComponentLink):
-    class ApiNotSupported(Exception):
-        pass
-
     def __init__(self, alias: str, config: dict):
-        config = {
-            "blacklist_filters": get_or_default(config, "blacklist_filters", []),
-            "blacklist_duration": get_or_default(config, "blacklist_duration", 3600),
-        }
+        config["blacklist_duration"] = get_or_default(
+            config, "blacklist_duration", 3600
+        )
         super().__init__(alias, config)
-
-        self.__statistics_listener = HttpListener(alias, config, self.__get_statistics)
-        self.__blacklist_listener = HttpListener(alias, config, self.__get_blacklist)
 
         self.__next_handlers = []
         self.__method_table = {}
@@ -68,16 +65,20 @@ class LoadBalancer(ComponentLink):
         first = self.__method_table[method]["hit_count"]
         last = first + len(self.__next_handlers)
         for index in range(first, last):
-            with log_and_suppress(logger, f"lb-handler-request - {request}"):
-                next_handler = self.__next_handlers[index % len(self.__next_handlers)]
+            next_handler = self.__next_handlers[index % len(self.__next_handlers)]
+            with log_and_suppress(
+                logger, f"lb-handle-request - {next_handler} - {request}"
+            ):
                 if not f"{next_handler}" in self.__method_table[method]["endpoints"]:
                     # This handler was blacklisted for current method
                     continue
                 try:
-                    return self.__check_api_support(
-                        await next_handler.do_handle_request(request), method
-                    )
-                except LoadBalancer.ApiNotSupported as ex:
+                    return await next_handler.do_handle_request(request)
+                except (
+                    EthMethodNotFound,
+                    EthMethodNotSupported,
+                    EthCapacityExceeded,
+                ) as ex:
                     logger.warning(f"Blacklisting {next_handler} - {ex}")
                     self.__method_table[method]["endpoints"].discard(f"{next_handler}")
                     if not method in self.__blacklist:
@@ -86,23 +87,10 @@ class LoadBalancer(ComponentLink):
         raise EthMethodNotSupported(f"{method} not supported")
 
     def _on_application_setup(self, app: web.Application):
-        self.__statistics_listener.do_setup_application(app)
-        self.__blacklist_listener.do_setup_application(app)
         app.cleanup_ctx.append(self.__ctx_cleanup)
-        app.add_routes(
-            [
-                web.post(
-                    f"/{self.alias}/statistics",
-                    self.__statistics_listener.handle_request,
-                ),
-                web.post(
-                    f"/{self.alias}/blacklist",
-                    self.__blacklist_listener.handle_request,
-                ),
-            ]
-        )
 
-    async def __get_statistics(self, _) -> Message:
+    @entrypoint
+    async def statistics(self, _) -> Message:
         """Resolve '/.../statistics' request"""
         output = {}
         for method in self.__method_table:
@@ -112,7 +100,8 @@ class LoadBalancer(ComponentLink):
             }
         return Message(output)
 
-    async def __get_blacklist(self, _) -> Message:
+    @entrypoint
+    async def blacklist(self, _) -> Message:
         """Resolve '/.../blacklist' request"""
         return Message(self.__blacklist)
 
@@ -127,21 +116,6 @@ class LoadBalancer(ComponentLink):
         blacklist_task.cancel()
         with suppress(asyncio.CancelledError):
             await blacklist_task
-
-    def __check_api_support(self, response: Message, method_name: str) -> Message:
-        if len(response) > 512:
-            # Optimization: error messages are small in size
-            return response
-        response_obj = response.as_json()
-        if not "error" in response_obj or not "message" in response_obj["error"]:
-            return response
-        error_message = response_obj["error"]["message"]
-        for msg in self.config["blacklist_filters"]:
-            if error_message.find(msg) > -1:
-                raise LoadBalancer.ApiNotSupported(
-                    f"{method_name} not supported: {response}"
-                )
-        return response
 
     async def __manage_blacklisted_endpoints(self):
         while True:

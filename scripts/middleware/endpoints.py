@@ -3,13 +3,14 @@ import aiohttp
 import asyncio
 import os
 
-from aiohttp import web
 from contextlib import suppress
+from aiohttp import web
 
 from middleware.abstract.component_base import ComponentBase
 from middleware.message import Message
 
-from middleware.helpers import unreachable_code
+from middleware.message import check_for_error_message
+from middleware.helpers import unreachable_code, suppress_decorator
 
 #
 # Setup logger
@@ -51,7 +52,9 @@ class JsonRpcEndpoint(ComponentBase):
             request[self.private_key("response_future")] = asyncio.Future()
             try:
                 await self.__queue.put(request)
-                return await request[self.private_key("response_future")]
+                return check_for_error_message(
+                    await request[self.private_key("response_future")]
+                )
             except JsonRpcEndpoint.WsClosedException as ex:
                 # Socket connection closed due to inactivity... retry
                 logger.warning(str(ex))
@@ -81,9 +84,9 @@ class JsonRpcEndpoint(ComponentBase):
             request_resolver = self.__request_resolver_loop_ws
 
         while True:
-            with suppress(Exception):
-                await request_resolver(session, url)
+            await request_resolver(session, url)
 
+    @suppress_decorator
     async def __request_resolver_loop_http(
         self, session: aiohttp.ClientSession, url: str
     ):
@@ -100,6 +103,7 @@ class JsonRpcEndpoint(ComponentBase):
             finally:
                 self.__queue.task_done()
 
+    @suppress_decorator
     async def __request_resolver_loop_ws(
         self, session: aiohttp.ClientSession, url: str
     ):

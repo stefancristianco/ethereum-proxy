@@ -24,7 +24,11 @@ from middleware.message import (
     is_response_success,
     set_no_cache_tag,
 )
-from middleware.helpers import log_and_suppress, get_or_default
+from middleware.helpers import (
+    log_and_suppress,
+    get_or_default,
+    log_and_suppress_decorator,
+)
 
 
 #
@@ -41,15 +45,12 @@ logger.setLevel(os.environ.setdefault("LOG_LEVEL", "INFO"))
 
 class Optimizer(RoundRobinSelector):
     def __init__(self, alias: str, config: dict):
-        config = {
-            "pooling_interval": get_or_default(config, "pooling_interval", 2),
-            "retries_count": get_or_default(config, "retries_count", 5),
-            "max_prefetch_range": get_or_default(config, "max_prefetch_range", 20),
-            "max_allowed_range": get_or_default(config, "max_allowed_range", 100),
-            "prefetch": get_or_default(
-                config, "prefetch", ["eth_getLogs", "eth_getBlockByNumber"]
-            ),
-        }
+        config["pooling_interval"] = get_or_default(config, "pooling_interval", 2)
+        config["retries_count"] = get_or_default(config, "retries_count", 5)
+        config["max_prefetch_range"] = get_or_default(config, "max_prefetch_range", 20)
+        config["max_allowed_range"] = get_or_default(config, "max_allowed_range", 100)
+        config["prefetch"] = get_or_default(config, "prefetch", [])
+
         super().__init__(alias, config)
 
         self.__block_number = 0
@@ -63,13 +64,6 @@ class Optimizer(RoundRobinSelector):
             "eth_sendRawTransaction": self.__optimize_eth_send_raw_transaction,
             # Trace API
             "trace_block": self.__optimize_trace_block,
-        }
-        self.__prefetch_table = {
-            # Ethereum API
-            "eth_getBlockByNumber": self.__prefetch_eth_get_block_by_number,
-            "eth_getLogs": self.__prefetch_eth_get_logs,
-            # Trace API
-            "trace_block": self.__prefetch_trace_block,
         }
 
     def __repr__(self) -> str:
@@ -93,8 +87,11 @@ class Optimizer(RoundRobinSelector):
         self.__block_available = Event()
         tasks = [
             asyncio.create_task(self.__prefetch_block_number()),
-            asyncio.create_task(self.__prefetch_data()),
         ]
+        if self.config["prefetch"]:
+            tasks.append(
+                asyncio.create_task(self.__prefetch_data()),
+            )
 
         yield
 
@@ -113,34 +110,11 @@ class Optimizer(RoundRobinSelector):
                     return new_block_number
         return self.__block_number
 
+    @log_and_suppress_decorator(logger)
     async def __prefetch_data_common(self, msg: Message):
-        with log_and_suppress(logger, f"prefetch-data-common - {msg}"):
-            for _ in range(self.config["retries_count"]):
-                if is_response_success(await super()._handle_request(msg)):
-                    return
-
-    async def __prefetch_eth_get_block_by_number(self, block_number: int):
-        await self.__prefetch_data_common(
-            make_request_message("eth_getBlockByNumber", [hex(block_number), True])
-        )
-
-    async def __prefetch_eth_get_logs(self, block_number: int):
-        await self.__prefetch_data_common(
-            make_request_message(
-                "eth_getLogs",
-                [
-                    {
-                        "fromBlock": hex(block_number),
-                        "toBlock": hex(block_number),
-                    }
-                ],
-            )
-        )
-
-    async def __prefetch_trace_block(self, block_number: int):
-        await self.__prefetch_data_common(
-            make_request_message("trace_block", [hex(block_number)])
-        )
+        for _ in range(self.config["retries_count"]):
+            if is_response_success(await super()._handle_request(msg)):
+                return
 
     async def __prefetch_block_number(self):
         while True:
@@ -166,9 +140,10 @@ class Optimizer(RoundRobinSelector):
             # Trigger prefetch in the range (last_fetched_block, self.__block_number]
             tasks = []
             for block_number in range(last_fetched_block + 1, self.__block_number + 1):
-                for method in self.config["prefetch"]:
-                    assert method in self.__prefetch_table
-                    tasks.append(self.__prefetch_table[method](block_number))
+                for request_builder in self.config["prefetch"]:
+                    tasks.append(
+                        self.__prefetch_data_common(request_builder(block_number))
+                    )
             last_fetched_block = self.__block_number
 
             await asyncio.gather(*tasks)

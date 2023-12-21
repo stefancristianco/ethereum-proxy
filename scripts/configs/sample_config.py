@@ -1,5 +1,6 @@
-from configs.lb_blacklist_config import ref_blacklist_filters
 from configs.cache_filter_config import ref_cache_filters
+
+from configs.request_templates import eth_get_block_by_number, eth_get_logs, trace_block
 
 
 class SampleConfig:
@@ -8,23 +9,21 @@ class SampleConfig:
         return {
             "components": {
                 "receiver": {"type": "receiver"},
-                "validator": {"type": "validator", "config": {"allow_pubsub": True}},
-                "pubsub": {"type": "pub_sub"},
+                "validator": {"type": "validator"},
                 "optimizer": {
                     "type": "optimizer",
                     "config": {
                         "pooling_interval": 3,
                         "prefetch": [
-                            "eth_getLogs",
-                            "eth_getBlockByNumber",
-                            "trace_block",
+                            eth_get_logs,
+                            eth_get_block_by_number,
+                            trace_block,
                         ],
                     },
                 },
                 "cache": {"type": "cache", "config": {**ref_cache_filters}},
                 "lb": {
                     "type": "load_balancer",
-                    "config": {**ref_blacklist_filters},
                 },
                 "endpoint-1": {
                     "type": "endpoint",
@@ -52,13 +51,19 @@ class SampleConfig:
                         **ref_sample,
                     },
                 },
+                "endpoint-6": {
+                    "type": "endpoint",
+                    "config": {
+                        "url": "wss://eth-mainnet.public.blastapi.io",
+                        **ref_sample,
+                    },
+                },
                 "debug": {"type": "debug"},
             },
             "flows": {
                 "proxy": {
                     "receiver": ["validator"],
-                    "validator": ["pubsub"],
-                    "pubsub": ["optimizer"],
+                    "validator": ["optimizer"],
                     "optimizer": ["cache"],
                     "debug": ["cache"],
                     "cache": ["lb"],
@@ -68,6 +73,7 @@ class SampleConfig:
                         "endpoint-3",
                         "endpoint-4",
                         "endpoint-5",
+                        "endpoint-6",
                     ],
                 }
             },
